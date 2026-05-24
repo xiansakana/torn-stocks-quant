@@ -60,30 +60,9 @@ console.log(`Sharpe (trades):   ${m.sharpeRatio.toFixed(2)}`);
 console.log(`Total fees:        ${m.totalFees.toFixed(2)}`);
 console.log(`Target 30% ann:    ${m.annualizedReturn >= 0.3 ? "PASS ✓" : "MISS — tuning needed"}`);
 
-// Quick param sweep for 30% target
-const tweaks = [
-  DEFAULT_STRATEGY_CONFIG,
-  { ...DEFAULT_STRATEGY_CONFIG, exitOnSellSignal: false },
-  { ...DEFAULT_STRATEGY_CONFIG, takeProfit: 0.6, trailingStop: 0.16, exitOnSellSignal: false },
-  { ...DEFAULT_STRATEGY_CONFIG, takeProfit: 0.65, positionSize: 0.45, maxPositions: 3, exitOnSellSignal: false },
-  { ...DEFAULT_STRATEGY_CONFIG, takeProfit: 0.55, stopLoss: 0.06, minBuyScore: 0.34, sellThreshold: -0.4 },
-  { ...DEFAULT_STRATEGY_CONFIG, takeProfit: 0.7, trailingStop: 0.18, exitOnSellSignal: false, minBuyScore: 0.34 },
-  { ...DEFAULT_STRATEGY_CONFIG, takeProfit: 0.58, positionSize: 0.48, maxPositions: 3, stopLoss: 0.06, exitOnSellSignal: false },
-];
-
-// Quick confirm best config
-const bestCfg = {
-  ...DEFAULT_STRATEGY_CONFIG,
-  positionSize: 0.48,
-  takeProfit: 0.42,
-  stopLoss: 0.06,
-  minBuyScore: 0.4,
-  trailingStop: 0.08,
-  sellThreshold: -0.3,
-  maxPositions: 4,
-};
-const bestRun = runPortfolioBacktest(series, bestCfg, capital);
-console.log(`\nConfirmed best config ann: ${(bestRun.metrics.annualizedReturn * 100).toFixed(2)}%`);
+// Quick confirm current default config
+const run = runPortfolioBacktest(series, DEFAULT_STRATEGY_CONFIG, capital);
+console.log(`\nDefault config ann: ${(run.metrics.annualizedReturn * 100).toFixed(2)}%`);
 }
 
 main().catch(console.error);

@@ -1,40 +1,9 @@
 /**
- * Strategy optimization script — fetches real tornsy data and benchmarks variants.
- * Run: node scripts/optimize-strategy.mjs
+ * Strategy optimization script — reads cached d1 Excel data.
+ * Run: pnpm run export-data -- --interval=d1 && node scripts/optimize-strategy.mjs
  */
 
-const TORNSY = "https://tornsy.com/api";
-const SYMBOLS = [
-  "FHG", "MUN", "TCI", "SYM", "MCS", "TSB", "CNC", "TMI", "PTS", "WLT",
-  "IOU", "GRN", "BAG", "WSU", "TCP", "TGP", "MSG", "PRN", "HRG", "LSC",
-  "SYS", "CBD", "TCC", "ASS", "EWM", "THS", "EVL", "LAG", "ELT", "TCM",
-  "TCT", "LOS", "YAZ", "IIL", "IST",
-];
-
-async function fetchCandles(symbol, interval = "d1", pages = 3) {
-  let all = [];
-  let to;
-  for (let p = 0; p < pages; p++) {
-    let url = `${TORNSY}/${symbol.toLowerCase()}?interval=${interval}`;
-    if (to) url += `&to=${to}`;
-    const res = await fetch(url);
-    if (!res.ok) break;
-    const json = await res.json();
-    const candles = json.data.map(([ts, o, h, l, c, v]) => ({
-      timestamp: ts * 1000,
-      open: +o,
-      high: +h,
-      low: +l,
-      close: +c,
-      volume: v,
-    }));
-    if (!candles.length) break;
-    all = [...candles, ...all];
-    if (candles.length < 1000) break;
-    to = Math.floor(candles[0].timestamp / 1000);
-  }
-  return all;
-}
+import { loadIntervalFromExcel } from "./lib/market-data.mjs";
 
 function sma(data, period) {
   const r = new Array(data.length).fill(NaN);
@@ -369,14 +338,9 @@ const BASE = {
   takeProfit: 0.25,
 };
 
-console.log("Fetching data...");
-const stockData = [];
-for (const symbol of SYMBOLS) {
-  const candles = await fetchCandles(symbol);
-  if (candles.length >= 100) stockData.push({ symbol, candles });
-  process.stdout.write(".");
-}
-console.log(`\nLoaded ${stockData.length} stocks\n`);
+console.log("Loading d1 data from Excel...");
+const { filePath, stockData } = loadIntervalFromExcel("d1");
+console.log(`${filePath}\nLoaded ${stockData.length} stocks\n`);
 
 // Baseline: old all-in single stock (TCI)
 const tci = stockData.find(s => s.symbol === "TCI");

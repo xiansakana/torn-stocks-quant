@@ -4,11 +4,13 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import type { OHLCVCandle, Interval, StrategySignal } from "@/types/stock";
-import { INTERVAL_LABELS } from "@/types/stock";
+import { ALL_INTERVALS, INTERVAL_LABELS } from "@/types/stock";
 import { AppShell } from "@/components/app-shell";
 import {
   createChart,
   type IChartApi,
+  type ISeriesApi,
+  type LogicalRange,
   ColorType,
   CrosshairMode,
   CandlestickSeries,
@@ -23,20 +25,24 @@ import {
   ArrowDownRight,
   Activity,
   TrendingUp,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-const INTERVALS: Interval[] = [
-  "d1", "w1", "n1", "y1", "h12", "h6", "h4", "h2", "h1", "m30", "m15", "m5", "m1",
-];
 
 interface RawOHLCV {
   data: [number, string, string, string, string, number][];
 }
 
+interface RawTick {
+  data: [number, string, number][];
+}
+
 interface StockInfoRaw {
   data: { stock: string; name: string; price: string; total_shares: number; investors: number }[];
 }
+
+const PAGE_SIZE = 1000;
+const LOAD_MORE_THRESHOLD = 30;
 
 function parseOHLCV(raw: RawOHLCV): OHLCVCandle[] {
   return raw.data.map(([timestamp, open, high, low, close, volume]) => ({
@@ -49,6 +55,62 @@ function parseOHLCV(raw: RawOHLCV): OHLCVCandle[] {
   }));
 }
 
+/** m1 API returns tick rows; aggregate into 1-minute OHLCV candles */
+function parseTicksToOHLCV(raw: RawTick): OHLCVCandle[] {
+  const buckets = new Map<number, number[]>();
+
+  for (const [timestamp, priceStr] of raw.data) {
+    const price = parseFloat(priceStr);
+    const minuteKey = Math.floor(timestamp / 60) * 60;
+    const prices = buckets.get(minuteKey) ?? [];
+    prices.push(price);
+    buckets.set(minuteKey, prices);
+  }
+
+  return [...buckets.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([minuteKey, prices]) => ({
+      timestamp: minuteKey * 1000,
+      open: prices[0],
+      high: Math.max(...prices),
+      low: Math.min(...prices),
+      close: prices[prices.length - 1],
+      volume: prices.length,
+    }));
+}
+
+function parseHistoryResponse(
+  data: RawOHLCV | RawTick,
+  interval: Interval
+): OHLCVCandle[] {
+  return interval === "m1"
+    ? parseTicksToOHLCV(data as RawTick)
+    : parseOHLCV(data as RawOHLCV);
+}
+
+function rawRowCount(data: RawOHLCV | RawTick): number {
+  return Array.isArray(data.data) ? data.data.length : 0;
+}
+
+function buildHistoryUrl(symbol: string, interval: Interval, to?: number) {
+  const params: string[] = [];
+  if (interval !== "m1") params.push(`interval=${interval}`);
+  if (to !== undefined) params.push(`to=${to}`);
+  const query = params.length > 0 ? `?${params.join("&")}` : "";
+  return `/api/stocks/${symbol.toLowerCase()}${query}`;
+}
+
+function mergeCandles(
+  existing: OHLCVCandle[],
+  older: OHLCVCandle[]
+): OHLCVCandle[] {
+  const map = new Map<number, OHLCVCandle>();
+  for (const c of [...older, ...existing]) {
+    map.set(c.timestamp, c);
+  }
+  return [...map.values()].sort((a, b) => a.timestamp - b.timestamp);
+}
+
 export default function StockDetailPage() {
   const params = useParams();
   const symbol = (params.symbol as string).toUpperCase();
@@ -59,6 +121,8 @@ export default function StockDetailPage() {
   const [interval, setInterval] = useState<Interval>("d1");
   const [signal, setSignal] = useState<StrategySignal | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMoreHistory, setHasMoreHistory] = useState(true);
   const [indicators, setIndicators] = useState<{
     rsi: number[];
     macd: { macd: number[]; signal: number[]; histogram: number[] };
@@ -67,6 +131,26 @@ export default function StockDetailPage() {
 
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const bbSeriesRef = useRef<{
+    upper: ISeriesApi<"Line">;
+    lower: ISeriesApi<"Line">;
+    middle: ISeriesApi<"Line">;
+  } | null>(null);
+  const candlesRef = useRef<OHLCVCandle[]>([]);
+  const loadingMoreRef = useRef(false);
+  const hasMoreHistoryRef = useRef(true);
+  const barsAddedRef = useRef(0);
+  const shouldFitContentRef = useRef(true);
+
+  useEffect(() => {
+    candlesRef.current = candles;
+  }, [candles]);
+
+  useEffect(() => {
+    hasMoreHistoryRef.current = hasMoreHistory;
+  }, [hasMoreHistory]);
 
   // Fetch stock info
   useEffect(() => {
@@ -84,23 +168,56 @@ export default function StockDetailPage() {
       .catch(() => {});
   }, [symbol]);
 
-  // Fetch historical data
+  // Fetch historical data (first page)
   const fetchHistorical = useCallback(async () => {
     setLoading(true);
     setIndicators(null);
+    setHasMoreHistory(true);
+    shouldFitContentRef.current = true;
+    barsAddedRef.current = 0;
     try {
-      const url =
-        interval === "m1"
-          ? `/api/stocks/${symbol.toLowerCase()}`
-          : `/api/stocks/${symbol.toLowerCase()}?interval=${interval}`;
-      const res = await fetch(url);
+      const res = await fetch(buildHistoryUrl(symbol, interval));
       if (res.ok) {
-        const data: RawOHLCV = await res.json();
-        const parsed = parseOHLCV(data);
+        const data: RawOHLCV | RawTick = await res.json();
+        const parsed = parseHistoryResponse(data, interval);
         setCandles(parsed);
+        setHasMoreHistory(rawRowCount(data) >= PAGE_SIZE);
+      } else {
+        setCandles([]);
+        setHasMoreHistory(false);
       }
     } finally {
       setLoading(false);
+    }
+  }, [symbol, interval]);
+
+  const loadMoreHistory = useCallback(async () => {
+    if (loadingMoreRef.current || !hasMoreHistoryRef.current) return;
+    const current = candlesRef.current;
+    if (current.length === 0) return;
+
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try {
+      const to = Math.floor(current[0].timestamp / 1000);
+      const res = await fetch(buildHistoryUrl(symbol, interval, to));
+      if (!res.ok) return;
+
+      const data: RawOHLCV | RawTick = await res.json();
+      const parsed = parseHistoryResponse(data, interval);
+      if (parsed.length === 0) {
+        setHasMoreHistory(false);
+        return;
+      }
+
+      const merged = mergeCandles(current, parsed);
+      const added = merged.length - current.length;
+      barsAddedRef.current = added;
+      setCandles(merged);
+      setHasMoreHistory(rawRowCount(data) >= PAGE_SIZE && added > 0);
+    } finally {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
     }
   }, [symbol, interval]);
 
@@ -212,17 +329,20 @@ export default function StockDetailPage() {
     });
   }, [candles]);
 
-  // Render chart
+  // Initialize chart (recreated on interval change)
   useEffect(() => {
-    if (!chartContainerRef.current || candles.length === 0) return;
+    if (!chartContainerRef.current || loading || candles.length === 0) return;
 
-    // Clean up
+    const container = chartContainerRef.current;
+
     if (chartRef.current) {
       chartRef.current.remove();
       chartRef.current = null;
+      candleSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      bbSeriesRef.current = null;
     }
 
-    const container = chartContainerRef.current;
     const chart = createChart(container, {
       layout: {
         background: { type: ColorType.Solid, color: "#1a1d29" },
@@ -253,8 +373,7 @@ export default function StockDetailPage() {
 
     chartRef.current = chart;
 
-    // Candlestick series
-    const candleSeries = chart.addSeries(CandlestickSeries, {
+    candleSeriesRef.current = chart.addSeries(CandlestickSeries, {
       upColor: "#22c55e",
       downColor: "#ef4444",
       borderUpColor: "#22c55e",
@@ -262,6 +381,48 @@ export default function StockDetailPage() {
       wickUpColor: "#22c55e",
       wickDownColor: "#ef4444",
     });
+
+    volumeSeriesRef.current = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: "volume" },
+      priceScaleId: "volume",
+    });
+
+    chart.priceScale("volume").applyOptions({
+      scaleMargins: { top: 0.85, bottom: 0 },
+    });
+
+    const onVisibleRangeChange = (range: LogicalRange | null) => {
+      if (range !== null && range.from < LOAD_MORE_THRESHOLD) {
+        loadMoreHistory();
+      }
+    };
+
+    chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleRangeChange);
+
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        chart.applyOptions({ width: entry.contentRect.width });
+      }
+    });
+    ro.observe(container);
+
+    return () => {
+      ro.disconnect();
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleRangeChange);
+      chart.remove();
+      chartRef.current = null;
+      candleSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      bbSeriesRef.current = null;
+    };
+  }, [interval, loading, loadMoreHistory]);
+
+  // Update chart data when candles or indicators change
+  useEffect(() => {
+    const chart = chartRef.current;
+    const candleSeries = candleSeriesRef.current;
+    const volumeSeries = volumeSeriesRef.current;
+    if (!chart || !candleSeries || !volumeSeries || candles.length === 0) return;
 
     const candleData: CandlestickData<Time>[] = candles.map((c) => ({
       time: (c.timestamp / 1000) as Time,
@@ -273,76 +434,67 @@ export default function StockDetailPage() {
 
     candleSeries.setData(candleData);
 
-    // Volume series
-    const volumeSeries = chart.addSeries(HistogramSeries, {
-      priceFormat: { type: "volume" },
-      priceScaleId: "volume",
-    });
+    volumeSeries.setData(
+      candles.map((c) => ({
+        time: (c.timestamp / 1000) as Time,
+        value: c.volume,
+        color: c.close >= c.open ? "#22c55e20" : "#ef444420",
+      }))
+    );
 
-    chart.priceScale("volume").applyOptions({
-      scaleMargins: { top: 0.85, bottom: 0 },
-    });
+    const toBBData = (arr: number[]) =>
+      arr
+        .map((v, i) => {
+          const candle = candles[i];
+          if (isNaN(v) || !candle) return null;
+          return { time: (candle.timestamp / 1000) as Time, value: v };
+        })
+        .filter(Boolean) as { time: Time; value: number }[];
 
-    const volumeData = candles.map((c) => ({
-      time: (c.timestamp / 1000) as Time,
-      value: c.volume,
-      color: c.close >= c.open ? "#22c55e20" : "#ef444420",
-    }));
-
-    volumeSeries.setData(volumeData);
-
-    // Bollinger Bands overlay
     if (indicators && indicators.bb.upper.length === candles.length) {
-      const bbUpperSeries = chart.addSeries(LineSeries, {
-        color: "#3b82f660",
-        lineWidth: 1,
-        priceLineVisible: false,
-        lastValueVisible: false,
-      });
-      const bbLowerSeries = chart.addSeries(LineSeries, {
-        color: "#3b82f660",
-        lineWidth: 1,
-        priceLineVisible: false,
-        lastValueVisible: false,
-      });
-      const bbMiddleSeries = chart.addSeries(LineSeries, {
-        color: "#3b82f640",
-        lineWidth: 1,
-        lineStyle: 2,
-        priceLineVisible: false,
-        lastValueVisible: false,
-      });
+      if (!bbSeriesRef.current) {
+        bbSeriesRef.current = {
+          upper: chart.addSeries(LineSeries, {
+            color: "#3b82f660",
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+          }),
+          lower: chart.addSeries(LineSeries, {
+            color: "#3b82f660",
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+          }),
+          middle: chart.addSeries(LineSeries, {
+            color: "#3b82f640",
+            lineWidth: 1,
+            lineStyle: 2,
+            priceLineVisible: false,
+            lastValueVisible: false,
+          }),
+        };
+      }
 
-      const toBBData = (arr: number[]) =>
-        arr
-          .map((v, i) => {
-            const candle = candles[i];
-            if (isNaN(v) || !candle) return null;
-            return { time: (candle.timestamp / 1000) as Time, value: v };
-          })
-          .filter(Boolean) as { time: Time; value: number }[];
-
-      bbUpperSeries.setData(toBBData(indicators.bb.upper));
-      bbLowerSeries.setData(toBBData(indicators.bb.lower));
-      bbMiddleSeries.setData(toBBData(indicators.bb.middle));
+      bbSeriesRef.current.upper.setData(toBBData(indicators.bb.upper));
+      bbSeriesRef.current.lower.setData(toBBData(indicators.bb.lower));
+      bbSeriesRef.current.middle.setData(toBBData(indicators.bb.middle));
     }
 
-    chart.timeScale().fitContent();
-
-    // Resize observer
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        chart.applyOptions({ width: entry.contentRect.width });
+    if (barsAddedRef.current > 0) {
+      const range = chart.timeScale().getVisibleLogicalRange();
+      if (range) {
+        chart.timeScale().setVisibleLogicalRange({
+          from: range.from + barsAddedRef.current,
+          to: range.to + barsAddedRef.current,
+        });
       }
-    });
-    ro.observe(container);
-
-    return () => {
-      ro.disconnect();
-      chart.remove();
-      chartRef.current = null;
-    };
-  }, [candles, indicators, interval]);
+      barsAddedRef.current = 0;
+    } else if (shouldFitContentRef.current) {
+      chart.timeScale().fitContent();
+      shouldFitContentRef.current = false;
+    }
+  }, [candles, indicators]);
 
   const priceChange =
     candles.length >= 2
@@ -438,7 +590,7 @@ export default function StockDetailPage() {
 
         {/* Interval Selector */}
         <div className="flex items-center gap-1 mb-4">
-          {INTERVALS.map((iv) => (
+          {ALL_INTERVALS.map((iv) => (
             <button
               key={iv}
               onClick={() => setInterval(iv)}
@@ -455,11 +607,19 @@ export default function StockDetailPage() {
         </div>
 
         {/* Chart */}
-        <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-4 mb-6">
+        <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-4 mb-6 relative">
           {loading ? (
             <div className="h-[400px] rounded skeleton" />
           ) : (
-            <div ref={chartContainerRef} className="w-full h-[400px]" />
+            <>
+              <div ref={chartContainerRef} className="w-full h-[400px]" />
+              {loadingMore && (
+                <div className="absolute top-6 left-6 flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-[#0f1117]/90 border border-[#2a2d3a] text-xs text-[#8b8fa3]">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-[#3b82f6]" />
+                  加载更早数据…
+                </div>
+              )}
+            </>
           )}
         </div>
 

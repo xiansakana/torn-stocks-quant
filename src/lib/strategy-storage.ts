@@ -1,6 +1,6 @@
 import type { StrategyConfig } from "@/types/stock";
 import { DEFAULT_STRATEGY_CONFIG } from "@/types/stock";
-import { resetLivePortfolio } from "@/lib/live-portfolio";
+import { resetLivePortfolio, clearLivePortfolio } from "@/lib/live-portfolio";
 
 export const STRATEGY_STORAGE_KEY = "tsq-active-strategy";
 export const STRATEGY_APPLIED_EVENT = "tsq-strategy-applied";
@@ -95,6 +95,14 @@ export function saveAppliedStrategy(
 
 export function getActiveStrategyConfig(): StrategyConfig {
   return loadAppliedStrategy()?.config ?? DEFAULT_STRATEGY_CONFIG;
+}
+
+/** Stop live strategy tracking and clear persisted portfolio state */
+export function stopActiveStrategy(): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(STRATEGY_STORAGE_KEY);
+  clearLivePortfolio();
+  window.dispatchEvent(new CustomEvent(STRATEGY_APPLIED_EVENT));
 }
 
 export function loadAlertConfig(): AlertConfigStorage | null {

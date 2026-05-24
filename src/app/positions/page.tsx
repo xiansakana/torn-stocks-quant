@@ -11,13 +11,14 @@ import {
 import {
   loadAppliedStrategy,
   STRATEGY_APPLIED_EVENT,
+  stopActiveStrategy,
 } from "@/lib/strategy-storage";
 import {
   loadLivePortfolio,
   saveLivePortfolio,
 } from "@/lib/live-portfolio";
 import { toCurrentPortfolioState } from "@/lib/live-trading";
-import { Briefcase, Loader2, RefreshCw } from "lucide-react";
+import { Briefcase, Loader2, RefreshCw, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatMoney, formatMoneyCompact } from "@/lib/format-money";
 
@@ -90,6 +91,23 @@ export default function PositionsPage() {
     }
   }, [displayFromStorage]);
 
+  const stopStrategy = useCallback(async () => {
+    if (
+      !confirm(
+        "确定停止当前策略？模拟持仓将被清除，不再自动同步信号。"
+      )
+    ) {
+      return;
+    }
+    stopActiveStrategy();
+    try {
+      await fetch("/api/alerts/stop", { method: "POST" });
+    } catch {
+      /* ignore */
+    }
+    displayFromStorage();
+  }, [displayFromStorage]);
+
   useEffect(() => {
     syncPositions();
   }, [syncPositions]);
@@ -115,14 +133,26 @@ export default function PositionsPage() {
               应用策略后从空仓起步，打开页面自动同步一次信号
             </p>
           </div>
-          <button
-            onClick={syncPositions}
-            disabled={syncing || !hasAppliedStrategy}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#2a2d3a] hover:bg-[#3b82f6]/20 text-[#8b8fa3] hover:text-[#3b82f6] transition-all text-sm disabled:opacity-50"
-          >
-            <RefreshCw className={cn("h-4 w-4", syncing && "animate-spin")} />
-            同步信号
-          </button>
+          <div className="flex items-center gap-2">
+            {hasAppliedStrategy && (
+              <button
+                onClick={stopStrategy}
+                disabled={syncing}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#ef4444]/10 hover:bg-[#ef4444]/20 text-[#ef4444] transition-all text-sm disabled:opacity-50"
+              >
+                <Square className="h-4 w-4" />
+                停止策略
+              </button>
+            )}
+            <button
+              onClick={syncPositions}
+              disabled={syncing || !hasAppliedStrategy}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#2a2d3a] hover:bg-[#3b82f6]/20 text-[#8b8fa3] hover:text-[#3b82f6] transition-all text-sm disabled:opacity-50"
+            >
+              <RefreshCw className={cn("h-4 w-4", syncing && "animate-spin")} />
+              同步信号
+            </button>
+          </div>
         </div>
 
         {!hasAppliedStrategy ? (

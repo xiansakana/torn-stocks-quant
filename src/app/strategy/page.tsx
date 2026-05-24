@@ -10,12 +10,14 @@ import {
   Activity,
   RefreshCw,
   Settings2,
+  Square,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   getActiveStrategyConfig,
   loadAppliedStrategy,
   saveAppliedStrategy,
+  stopActiveStrategy,
   STRATEGY_APPLIED_EVENT,
   type AppliedStrategyMeta,
 } from "@/lib/strategy-storage";
@@ -69,6 +71,24 @@ export default function StrategyPage() {
     }
   }, [config]);
 
+  const stopStrategy = useCallback(async () => {
+    if (
+      !confirm(
+        "确定停止当前策略？模拟持仓将被清除，不再自动同步信号。"
+      )
+    ) {
+      return;
+    }
+    stopActiveStrategy();
+    setAppliedMeta(null);
+    setConfig(DEFAULT_STRATEGY_CONFIG);
+    try {
+      await fetch("/api/alerts/stop", { method: "POST" });
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   useEffect(() => {
     fetchSignals();
   }, [fetchSignals]);
@@ -96,6 +116,15 @@ export default function StrategyPage() {
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {appliedMeta && (
+              <button
+                onClick={stopStrategy}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#ef4444]/10 text-[#ef4444] text-sm hover:bg-[#ef4444]/20 transition-all"
+              >
+                <Square className="h-4 w-4" />
+                停止策略
+              </button>
+            )}
             <button
               onClick={() => setShowConfig(!showConfig)}
               className={cn(

@@ -1,0 +1,222 @@
+{
+  "config": {
+    "strategyType": "signal",
+    "capital": 100000,
+    "rsiPeriod": 14,
+    "rsiOversold": 35,
+    "rsiOverbought": 65,
+    "macdFast": 12,
+    "macdSlow": 26,
+    "macdSignal": 9,
+    "bbPeriod": 20,
+    "bbStd": 2,
+    "sellFee": 0.001,
+    "buyThreshold": 0.25,
+    "sellThreshold": -0.15,
+    "minBuyScore": 0.36,
+    "positionSize": 0.15,
+    "maxPositionPerSymbol": 0.5,
+    "allowScaleIn": true,
+    "addOnMinScore": 0.28,
+    "addOnCooldownBars": 1,
+    "maxPositions": 5,
+    "stopLoss": 0.025,
+    "takeProfit": 0.03,
+    "trailingStop": 0.05,
+    "scaleByScore": true,
+    "exitOnSellSignal": false,
+    "requireTrend": false
+  },
+  "trainYears": 3,
+  "testYears": 1,
+  "top10Volatile": [
+    "ELT",
+    "FHG",
+    "TCT",
+    "TCP",
+    "SYM",
+    "TCC",
+    "LAG",
+    "IST",
+    "TMI",
+    "TCM"
+  ],
+  "scenarios": {
+    "all": {
+      "label": "All 35 symbols",
+      "symbols": [
+        "FHG",
+        "MUN",
+        "TCI",
+        "SYM",
+        "MCS",
+        "TSB",
+        "CNC",
+        "TMI",
+        "PTS",
+        "WLT",
+        "IOU",
+        "GRN",
+        "BAG",
+        "WSU",
+        "TCP",
+        "TGP",
+        "MSG",
+        "PRN",
+        "HRG",
+        "LSC",
+        "SYS",
+        "CBD",
+        "TCC",
+        "ASS",
+        "EWM",
+        "THS",
+        "EVL",
+        "LAG",
+        "ELT",
+        "TCM",
+        "TCT",
+        "LOS",
+        "YAZ",
+        "IIL",
+        "IST"
+      ],
+      "fullSample": {
+        "ann": 0.14414692481786862,
+        "totalRet": 0.9889021749000007,
+        "trades": 302,
+        "winRate": 0.6589403973509934,
+        "final": 198890.21749000007,
+        "years": 5.106091718001369
+      },
+      "folds": [
+        {
+          "fold": 1,
+          "testStart": "2024-04-14",
+          "testEnd": "2025-04-15",
+          "train": {
+            "ann": 0.19164338063239494,
+            "totalRet": 0.6907293024000004,
+            "trades": 256,
+            "winRate": 0.6328125,
+            "final": 169072.93024000005,
+            "years": 2.9952087611225187
+          },
+          "oos": {
+            "ann": 0.054450088881635716,
+            "totalRet": 0.05441182380000013,
+            "trades": 19,
+            "winRate": 0.7368421052631579,
+            "final": 105441.18238000001,
+            "years": 0.999315537303217
+          }
+        },
+        {
+          "fold": 2,
+          "testStart": "2025-04-15",
+          "testEnd": "2026-04-15",
+          "train": {
+            "ann": 0.1268376855371114,
+            "totalRet": 0.42999858799999957,
+            "trades": 163,
+            "winRate": 0.656441717791411,
+            "final": 142999.85879999996,
+            "years": 2.9952087611225187
+          },
+          "oos": {
+            "ann": 0.0843173783638409,
+            "totalRet": 0.08425730049999984,
+            "trades": 22,
+            "winRate": 0.7727272727272727,
+            "final": 108425.73004999998,
+            "years": 0.999315537303217
+          }
+        }
+      ],
+      "oosAggregate": {
+        "ann": 0.06927945645264044,
+        "totalRet": 0.14325371768866968,
+        "trades": 41,
+        "winRate": 0.7560975609756098,
+        "final": 114325.37176886697,
+        "years": 1.998631074606434
+      }
+    },
+    "top10": {
+      "label": "Top 10 volatile",
+      "symbols": [
+        "ELT",
+        "FHG",
+        "TCT",
+        "TCP",
+        "SYM",
+        "TCC",
+        "LAG",
+        "IST",
+        "TMI",
+        "TCM"
+      ],
+      "fullSample": {
+        "ann": 0.05863846510255466,
+        "totalRet": 0.3377158469999986,
+        "trades": 225,
+        "winRate": 0.5733333333333334,
+        "final": 133771.58469999986,
+        "years": 5.106091718001369
+      },
+      "folds": [
+        {
+          "fold": 1,
+          "testStart": "2024-04-14",
+          "testEnd": "2025-04-15",
+          "train": {
+            "ann": 0.07580391917470108,
+            "totalRet": 0.24465023459999866,
+            "trades": 190,
+            "winRate": 0.5421052631578948,
+            "final": 124465.02345999987,
+            "years": 2.9952087611225187
+          },
+          "oos": {
+            "ann": 0.038666941039284364,
+            "totalRet": 0.038639970100000066,
+            "trades": 21,
+            "winRate": 0.5238095238095238,
+            "final": 103863.99701,
+            "years": 0.999315537303217
+          }
+        },
+        {
+          "fold": 2,
+          "testStart": "2025-04-15",
+          "testEnd": "2026-04-15",
+          "train": {
+            "ann": 0.08566764192715137,
+            "totalRet": 0.2791446229999991,
+            "trades": 135,
+            "winRate": 0.5925925925925926,
+            "final": 127914.46229999991,
+            "years": 2.9952087611225187
+          },
+          "oos": {
+            "ann": 0.05921704371348846,
+            "totalRet": 0.05917533559999967,
+            "trades": 25,
+            "winRate": 0.52,
+            "final": 105917.53355999997,
+            "years": 0.999315537303217
+          }
+        }
+      ],
+      "oosAggregate": {
+        "ann": 0.04889166585046478,
+        "totalRet": 0.10010183889824109,
+        "trades": 46,
+        "winRate": 0.5217391304347826,
+        "final": 110010.18388982411,
+        "years": 1.998631074606434
+      }
+    }
+  },
+  "generatedAt": "2026-05-24T17:19:16.703Z"
+}

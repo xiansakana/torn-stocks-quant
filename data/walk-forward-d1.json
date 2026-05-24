@@ -1,0 +1,173 @@
+{
+  "generatedAt": "2026-05-24T17:21:08.503Z",
+  "recommendation": "fine-grid",
+  "robustOosAvgAnn": 0.10121054367732857,
+  "fineOosAvgAnn": 0.17288554096635333,
+  "holdoutRobust": 0.035939621688072076,
+  "holdoutFine": 0.12519448749328665,
+  "bestSubset": "all-35 mp5",
+  "bestSubsetAnn": 0.1370147927573755,
+  "volTop10": [
+    "TCP",
+    "ELT",
+    "FHG",
+    "TCT",
+    "IST",
+    "TCM",
+    "TCC",
+    "LSC",
+    "BAG",
+    "SYM"
+  ],
+  "fullSample": [
+    {
+      "label": "full/robust",
+      "ann": 0.1370147927573755,
+      "totalRet": 0.8928357623000001,
+      "trades": 289,
+      "winRate": 0.6539792387543253,
+      "maxDd": 0.04139654191621076,
+      "symbols": 35
+    },
+    {
+      "label": "full/fine-grid",
+      "ann": 0.18406637307258333,
+      "totalRet": 1.3153688977000013,
+      "trades": 732,
+      "winRate": 0.889344262295082,
+      "maxDd": 0.02776264760456403,
+      "symbols": 35
+    },
+    {
+      "label": "full/default",
+      "ann": 0.1370147927573755,
+      "totalRet": 0.8928357623000001,
+      "trades": 289,
+      "winRate": 0.6539792387543253,
+      "maxDd": 0.04139654191621076,
+      "symbols": 35
+    }
+  ],
+  "walkForwardAvg": {
+    "robust": [
+      0.1821393377663374,
+      0.11361318230424589,
+      0.047419278181810576,
+      0.06167037645692042
+    ],
+    "fine-grid": [
+      0.33609263496567277,
+      0.19191372574955845,
+      0.09979128908760582,
+      0.06374451406257631
+    ],
+    "default": [
+      0.1821393377663374,
+      0.11361318230424589,
+      0.047419278181810576,
+      0.06167037645692042
+    ]
+  },
+  "holdout": [
+    {
+      "label": "holdout/robust",
+      "ann": 0.035939621688072076,
+      "totalRet": 0.07498795380000026,
+      "trades": 37,
+      "winRate": 0.6486486486486487,
+      "maxDd": 0.020684208275395896,
+      "symbols": 35
+    },
+    {
+      "label": "holdout/fine-grid",
+      "ann": 0.12519448749328665,
+      "totalRet": 0.2732381067000012,
+      "trades": 167,
+      "winRate": 0.9341317365269461,
+      "maxDd": 0.009804298533445081,
+      "symbols": 35
+    },
+    {
+      "label": "holdout/default",
+      "ann": 0.035939621688072076,
+      "totalRet": 0.07498795380000026,
+      "trades": 37,
+      "winRate": 0.6486486486486487,
+      "maxDd": 0.020684208275395896,
+      "symbols": 35
+    }
+  ],
+  "subset": [
+    {
+      "label": "all-35 mp5",
+      "ann": 0.1370147927573755,
+      "totalRet": 0.8928357623000001,
+      "trades": 289,
+      "winRate": 0.6539792387543253,
+      "maxDd": 0.04139654191621076,
+      "symbols": 35
+    },
+    {
+      "label": "top15 mp5",
+      "ann": 0.09048417168662959,
+      "totalRet": 0.5379355063999998,
+      "trades": 274,
+      "winRate": 0.6204379562043796,
+      "maxDd": 0.058999878425365825,
+      "symbols": 15
+    },
+    {
+      "label": "top10 mp5",
+      "ann": 0.044599008555842534,
+      "totalRet": 0.24212236919999894,
+      "trades": 223,
+      "winRate": 0.5605381165919282,
+      "maxDd": 0.09350075122296665,
+      "symbols": 10
+    },
+    {
+      "label": "top10 mp3 conc",
+      "ann": 0.08016771086259511,
+      "totalRet": 0.46698069369999956,
+      "trades": 162,
+      "winRate": 0.6111111111111112,
+      "maxDd": 0.03729103029092927,
+      "symbols": 10
+    },
+    {
+      "label": "top10 mp3 wide-tp",
+      "ann": 0.05382164731322936,
+      "totalRet": 0.2975805633999995,
+      "trades": 115,
+      "winRate": 0.4956521739130435,
+      "maxDd": 0.07542489837856713,
+      "symbols": 10
+    }
+  ],
+  "recommendedConfig": {
+    "strategyType": "signal",
+    "rsiPeriod": 14,
+    "rsiOverbought": 65,
+    "rsiOversold": 35,
+    "macdFast": 12,
+    "macdSlow": 26,
+    "macdSignal": 9,
+    "bollingerPeriod": 20,
+    "bollingerStdDev": 2,
+    "sellFee": 0.001,
+    "buyThreshold": 0.25,
+    "sellThreshold": -0.15,
+    "minBuyScore": 0.34,
+    "exitOnSellSignal": false,
+    "positionSize": 0.17,
+    "maxPositionPerSymbol": 0.5,
+    "allowScaleIn": true,
+    "addOnMinScore": 0.26,
+    "addOnCooldownBars": 1,
+    "maxPositions": 6,
+    "stopLoss": 0.04,
+    "takeProfit": 0.01,
+    "trailingStop": 0.05,
+    "scaleByScore": true
+  }
+}

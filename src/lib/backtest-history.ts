@@ -4,7 +4,7 @@ import type {
   BacktestResult,
   Interval,
 } from "@/types/stock";
-import { INTERVAL_LABELS } from "@/types/stock";
+import { INTERVAL_LABELS, TRACKED_SYMBOLS } from "@/types/stock";
 
 /** Legacy localStorage key — migrated once into IndexedDB */
 export const BACKTEST_HISTORY_KEY = "tsq-backtest-history";
@@ -99,7 +99,14 @@ function generateId(): string {
 }
 
 export function buildBacktestLabel(params: BacktestHistoryParams): string {
-  const modeLabel = params.mode === "portfolio" ? "组合" : params.symbol ?? "单股";
+  const modeLabel =
+    params.mode === "portfolio"
+      ? params.symbols &&
+        params.symbols.length > 0 &&
+        params.symbols.length < TRACKED_SYMBOLS.length
+        ? `组合 ${params.symbols.length}只`
+        : "组合"
+      : (params.symbol ?? "单股");
   const range =
     params.startDate || params.endDate
       ? ` ${params.startDate ?? "…"}~${params.endDate ?? "…"}`

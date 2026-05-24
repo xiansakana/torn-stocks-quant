@@ -104,6 +104,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const {
       symbol = "TCI",
+      symbols,
       interval = "d1",
       capital = 100000,
       mode = "portfolio",
@@ -112,6 +113,7 @@ export async function POST(request: NextRequest) {
       config: configOverride,
     } = body as {
       symbol?: string;
+      symbols?: string[];
       interval?: string;
       capital?: number;
       mode?: "single" | "portfolio";
@@ -133,11 +135,25 @@ export async function POST(request: NextRequest) {
     };
 
     if (mode === "portfolio") {
+      const trackedSet = new Set<string>(TRACKED_SYMBOLS);
+      const requested =
+        Array.isArray(symbols) && symbols.length > 0
+          ? symbols.map((s) => s.toUpperCase())
+          : [...TRACKED_SYMBOLS];
+      const symbolList = [...new Set(requested)].filter((s) => trackedSet.has(s));
+
+      if (symbolList.length === 0) {
+        return NextResponse.json(
+          { error: "请至少选择一只有效标的" },
+          { status: 400 }
+        );
+      }
+
       const series: StockCandleSeries[] = [];
       const fetchPages = startDate ? 5 : 3;
 
       await Promise.all(
-        TRACKED_SYMBOLS.map(async (sym) => {
+        symbolList.map(async (sym) => {
           try {
             const { candles } = prepareBacktestCandles(
               await fetchCandles(sym, interval, fetchPages),

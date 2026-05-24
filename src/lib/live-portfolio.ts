@@ -28,3 +28,9 @@ export function resetLivePortfolio(
   saveLivePortfolio(state);
   return state;
 }
+
+export function clearLivePortfolio(): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(LIVE_PORTFOLIO_KEY);
+  window.dispatchEvent(new CustomEvent(LIVE_PORTFOLIO_EVENT, { detail: null }));
+}

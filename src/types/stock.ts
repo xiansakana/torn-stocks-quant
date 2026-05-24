@@ -140,6 +140,9 @@ export interface BacktestResult {
   positionHistory?: PositionSnapshot[];
   initialCapital?: number;
   mode?: "single" | "portfolio";
+  symbol?: string;
+  /** Symbols included in portfolio backtest */
+  symbols?: string[];
   startDate?: string | null;
   endDate?: string | null;
 }
@@ -148,6 +151,8 @@ export interface BacktestResult {
 export interface BacktestHistoryParams {
   mode: "single" | "portfolio";
   symbol?: string;
+  /** Portfolio mode: selected symbols (omit = all tracked) */
+  symbols?: string[];
   interval: Interval;
   capital: number;
   config: StrategyConfig;
@@ -223,6 +228,7 @@ export interface StrategyConfig {
   scaleByScore: boolean;
 }
 
+/** D1 defaults — TP/SL/trailing tuned on market-d1.xlsx (see walk-forward-d1.json) */
 export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   rsiPeriod: 14,
   rsiOverbought: 58,
@@ -237,11 +243,11 @@ export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   sellThreshold: -0.3,
   minBuyScore: 0.4,
   exitOnSellSignal: true,
-  positionSize: 0.48,
+  positionSize: 1,
   maxPositions: 4,
-  stopLoss: 0.06,
-  takeProfit: 0.42,
-  trailingStop: 0.08,
+  stopLoss: 0.04,
+  takeProfit: 0.03,
+  trailingStop: 0.05,
   scaleByScore: true,
 };
 
@@ -260,19 +266,19 @@ export const ALL_INTERVALS: Interval[] = [
   "m1", "m5", "m15", "m30", "h1", "h2", "h4", "h6", "h12", "d1", "w1", "n1", "y1",
 ];
 
-/** Interval display labels */
+/** Interval display labels (1m = minute, 1M = month) */
 export const INTERVAL_LABELS: Record<Interval, string> = {
-  y1: "1Y",
-  n1: "1M",
-  w1: "1W",
+  m1: "1m",
+  m5: "5m",
+  m15: "15m",
+  m30: "30m",
+  h1: "1h",
+  h2: "2h",
+  h4: "4h",
+  h6: "6h",
+  h12: "12h",
   d1: "1D",
-  h12: "12H",
-  h6: "6H",
-  h4: "4H",
-  h2: "2H",
-  h1: "1H",
-  m30: "30M",
-  m15: "15M",
-  m5: "5M",
-  m1: "1M",
+  w1: "1W",
+  n1: "1M",
+  y1: "1Y",
 };

@@ -1,0 +1,31 @@
+{
+  "interval": "d1",
+  "ann": 0.17669551205189782,
+  "strategyType": "signal",
+  "config": {
+    "rsiPeriod": 14,
+    "rsiOversold": 35,
+    "rsiOverbought": 65,
+    "macdFast": 12,
+    "macdSlow": 26,
+    "macdSignal": 9,
+    "bbPeriod": 20,
+    "bbStd": 2,
+    "sellFee": 0.001,
+    "buyThreshold": 0.25,
+    "sellThreshold": -0.15,
+    "minBuyScore": 0.34,
+    "positionSize": 0.17,
+    "maxPositionPerSymbol": 0.5,
+    "allowScaleIn": true,
+    "addOnMinScore": 0.26,
+    "addOnCooldownBars": 1,
+    "maxPositions": 6,
+    "stopLoss": 0.04,
+    "takeProfit": 0.01,
+    "trailingStop": 0.05,
+    "scaleByScore": true,
+    "exitOnSellSignal": false,
+    "requireTrend": false
+  }
+}

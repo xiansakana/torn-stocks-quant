@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import type { StrategyConfig, BacktestResult, Interval, BacktestHistoryParams, BacktestHistoryRecord } from "@/types/stock";
 import { DEFAULT_STRATEGY_CONFIG, TRACKED_SYMBOLS, ALL_INTERVALS, INTERVAL_LABELS } from "@/types/stock";
 import { AppShell } from "@/components/app-shell";
@@ -32,7 +32,9 @@ import {
   History,
   Trash2,
   Eye,
+  Square,
 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/format-money";
 import {
@@ -53,6 +55,8 @@ import {
 import {
   loadAppliedStrategy,
   saveAppliedStrategy,
+  stopActiveStrategy,
+  STRATEGY_APPLIED_EVENT,
   loadAlertConfig,
   saveAlertConfig,
   exportAlertConfigFile,
@@ -96,9 +100,84 @@ function handleDateChange(
   setter(sanitizeDateInput(raw, min, max));
 }
 
+function sortSymbolsByTracked(symbols: string[]): string[] {
+  const selected = new Set(symbols);
+  return TRACKED_SYMBOLS.filter((s) => selected.has(s));
+}
+
+function findSeriesBaseIndex(data: LineData<Time>[], fromTime: Time): number {
+  const fromSec = fromTime as number;
+  let idx = 0;
+  for (let i = 0; i < data.length; i++) {
+    if ((data[i].time as number) <= fromSec) idx = i;
+    else break;
+  }
+  return idx;
+}
+
+function rebaseGrowthSeries(
+  factors: LineData<Time>[],
+  baseIdx: number
+): LineData<Time>[] {
+  const base = factors[baseIdx]?.value;
+  if (!base || base <= 0) {
+    return factors.map((p) => ({ time: p.time, value: 0 }));
+  }
+  return factors.map((p) => ({
+    time: p.time,
+    value: (p.value / base - 1) * 100,
+  }));
+}
+
+function getCachedRebasedSeries(
+  cache: Map<number, LineData<Time>[]>,
+  factors: LineData<Time>[],
+  baseIdx: number
+): LineData<Time>[] {
+  let rebased = cache.get(baseIdx);
+  if (!rebased) {
+    rebased = rebaseGrowthSeries(factors, baseIdx);
+    cache.set(baseIdx, rebased);
+  }
+  return rebased;
+}
+
+function timestampToDateInput(ts: number): string {
+  const d = new Date(ts);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function dateInputToChartTimeStart(date: string): Time | null {
+  const sanitized = sanitizeDateInput(date);
+  if (!sanitized) return null;
+  return Math.floor(
+    new Date(`${sanitized}T00:00:00`).getTime() / 1000
+  ) as Time;
+}
+
+function dateInputToChartTimeEnd(date: string): Time | null {
+  const sanitized = sanitizeDateInput(date);
+  if (!sanitized) return null;
+  return Math.floor(
+    new Date(`${sanitized}T23:59:59`).getTime() / 1000
+  ) as Time;
+}
+
+function chartTimeToDateInput(time: Time): string {
+  return timestampToDateInput((time as number) * 1000);
+}
+
+const DEFAULT_PORTFOLIO_SYMBOLS = [...TRACKED_SYMBOLS];
+
 export default function BacktestPage() {
   const [mode, setMode] = useState<"single" | "portfolio">("portfolio");
   const [symbol, setSymbol] = useState("TCI");
+  const [portfolioSymbols, setPortfolioSymbols] = useState<string[]>(
+    DEFAULT_PORTFOLIO_SYMBOLS
+  );
   const [klineInterval, setKlineInterval] = useState<Interval>("d1");
   const [capital, setCapital] = useState(100000);
   const [startDate, setStartDate] = useState("");
@@ -139,6 +218,114 @@ export default function BacktestPage() {
 
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const chartCtxRef = useRef<{
+    chart: IChartApi;
+    equitySeries: ReturnType<IChartApi["addSeries"]>;
+    benchmarkSeries: ReturnType<IChartApi["addSeries"]> | null;
+    syncToVisibleRange: () => void;
+  } | null>(null);
+  const applyingChartRangeRef = useRef(false);
+  const chartViewRangeRef = useRef({ start: "", end: "" });
+  const chartDateEditingRef = useRef<"start" | "end" | null>(null);
+  const showStrategyLineRef = useRef(true);
+  const showTcseLineRef = useRef(true);
+
+  const [chartViewStart, setChartViewStart] = useState("");
+  const [chartViewEnd, setChartViewEnd] = useState("");
+  const [showStrategyLine, setShowStrategyLine] = useState(true);
+  const [showTcseLine, setShowTcseLine] = useState(true);
+
+  const chartDataBounds = useMemo(() => {
+    if (!result?.equityCurve.length) return null;
+    const eq = result.equityCurve;
+    return {
+      min: timestampToDateInput(eq[0].timestamp),
+      max: timestampToDateInput(eq[eq.length - 1].timestamp),
+    };
+  }, [result]);
+
+  const applyChartViewRange = useCallback((start: string, end: string) => {
+    const ctx = chartCtxRef.current;
+    if (!ctx || !start || !end) return;
+    const from = dateInputToChartTimeStart(start);
+    const to = dateInputToChartTimeEnd(end);
+    if (!from || !to || (from as number) > (to as number)) return;
+
+    applyingChartRangeRef.current = true;
+    ctx.chart.timeScale().setVisibleRange({ from, to });
+    ctx.syncToVisibleRange();
+    window.setTimeout(() => {
+      applyingChartRangeRef.current = false;
+    }, 0);
+  }, []);
+
+  const commitChartViewStart = useCallback(
+    (raw: string) => {
+      if (!chartDataBounds) return;
+      if (!raw) {
+        chartViewRangeRef.current.start = "";
+        setChartViewStart("");
+        return;
+      }
+      const next = sanitizeDateInput(
+        raw,
+        chartDataBounds.min,
+        chartViewEnd || chartDataBounds.max
+      );
+      if (!next) return;
+      chartViewRangeRef.current.start = next;
+      setChartViewStart(next);
+      applyChartViewRange(next, chartViewEnd || next);
+    },
+    [chartDataBounds, chartViewEnd, applyChartViewRange]
+  );
+
+  const commitChartViewEnd = useCallback(
+    (raw: string) => {
+      if (!chartDataBounds) return;
+      if (!raw) {
+        chartViewRangeRef.current.end = "";
+        setChartViewEnd("");
+        return;
+      }
+      const next = sanitizeDateInput(
+        raw,
+        chartViewStart || chartDataBounds.min,
+        chartDataBounds.max
+      );
+      if (!next) return;
+      chartViewRangeRef.current.end = next;
+      setChartViewEnd(next);
+      applyChartViewRange(chartViewStart || next, next);
+    },
+    [chartDataBounds, chartViewStart, applyChartViewRange]
+  );
+
+  useEffect(() => {
+    showStrategyLineRef.current = showStrategyLine;
+    showTcseLineRef.current = showTcseLine;
+    const ctx = chartCtxRef.current;
+    if (!ctx) return;
+    ctx.equitySeries.applyOptions({ visible: showStrategyLine });
+    ctx.benchmarkSeries?.applyOptions({ visible: showTcseLine });
+  }, [showStrategyLine, showTcseLine]);
+
+  useEffect(() => {
+    if (!result?.equityCurve.length) {
+      chartViewRangeRef.current = { start: "", end: "" };
+      setChartViewStart("");
+      setChartViewEnd("");
+      return;
+    }
+    const eq = result.equityCurve;
+    const start = timestampToDateInput(eq[0].timestamp);
+    const end = timestampToDateInput(eq[eq.length - 1].timestamp);
+    chartViewRangeRef.current = { start, end };
+    setChartViewStart(start);
+    setChartViewEnd(end);
+    setShowStrategyLine(true);
+    setShowTcseLine(true);
+  }, [result]);
 
   const applyAlertFields = useCallback((cfg: AlertConfigStorage) => {
     const normalized = normalizeAlertConfig(cfg);
@@ -186,6 +373,13 @@ export default function BacktestPage() {
     setCapital(record.params.capital);
     setMode(record.params.mode);
     if (record.params.symbol) setSymbol(record.params.symbol);
+    if (record.params.mode === "portfolio") {
+      setPortfolioSymbols(
+        record.params.symbols?.length
+          ? sortSymbolsByTracked(record.params.symbols)
+          : DEFAULT_PORTFOLIO_SYMBOLS
+      );
+    }
     setKlineInterval(record.params.interval);
     setConfig(record.params.config);
     setStartDate(record.params.startDate ?? "");
@@ -202,7 +396,39 @@ export default function BacktestPage() {
     const applied = loadAppliedStrategy();
     if (applied) setConfig(applied.config);
     setAlertHydrated(true);
+    const onStrategyChange = () => setAppliedMeta(loadAppliedStrategy());
+    window.addEventListener(STRATEGY_APPLIED_EVENT, onStrategyChange);
+    return () => window.removeEventListener(STRATEGY_APPLIED_EVENT, onStrategyChange);
   }, [applyAlertFields]);
+
+  const applyStrategy = useCallback(() => {
+    const meta = saveAppliedStrategy(config, "backtest", capital);
+    setAppliedMeta(meta);
+    setApplySuccess("策略已应用，Dashboard 与策略信号页将使用当前参数");
+    setTimeout(() => setApplySuccess(null), 4000);
+  }, [config, capital]);
+
+  const stopStrategy = useCallback(async () => {
+    if (
+      !confirm(
+        "确定停止当前策略？模拟持仓将被清除，不再自动同步信号。"
+      )
+    ) {
+      return;
+    }
+    stopActiveStrategy();
+    setAppliedMeta(null);
+    setApplySuccess("策略已停止");
+    setTimeout(() => setApplySuccess(null), 4000);
+    try {
+      await fetch("/api/alerts/stop", { method: "POST" });
+      const res = await fetch("/api/alerts/status");
+      const data = await res.json();
+      if (data.success) setAlertStatus(data.status);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   useEffect(() => {
     if (!alertHydrated) return;
@@ -250,13 +476,6 @@ export default function BacktestPage() {
       });
     }
   }, [applyAlertFields]);
-
-  const applyStrategy = useCallback(() => {
-    const meta = saveAppliedStrategy(config, "backtest", capital);
-    setAppliedMeta(meta);
-    setApplySuccess("策略已应用，Dashboard 与策略信号页将使用当前参数");
-    setTimeout(() => setApplySuccess(null), 4000);
-  }, [config]);
 
   const testEmail = useCallback(async () => {
     if (!emailHost || !emailPort || !emailUser || !emailPass || !recipientEmail) {
@@ -349,6 +568,11 @@ export default function BacktestPage() {
   }, []);
 
   const runBacktest = useCallback(async () => {
+    if (mode === "portfolio" && portfolioSymbols.length === 0) {
+      setError("请至少选择一只标的");
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
@@ -357,6 +581,11 @@ export default function BacktestPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           symbol,
+          symbols:
+            mode === "portfolio" &&
+            portfolioSymbols.length < TRACKED_SYMBOLS.length
+              ? portfolioSymbols
+              : undefined,
           interval: klineInterval,
           capital,
           config,
@@ -376,6 +605,11 @@ export default function BacktestPage() {
       const params: BacktestHistoryParams = {
         mode,
         symbol: mode === "single" ? symbol : undefined,
+        symbols:
+          mode === "portfolio" &&
+          portfolioSymbols.length < TRACKED_SYMBOLS.length
+            ? portfolioSymbols
+            : undefined,
         interval: klineInterval,
         capital,
         config,
@@ -399,7 +633,7 @@ export default function BacktestPage() {
     } finally {
       setLoading(false);
     }
-  }, [symbol, klineInterval, capital, config, mode, startDate, endDate]);
+  }, [symbol, portfolioSymbols, klineInterval, capital, config, mode, startDate, endDate]);
 
   // Render equity curve with TCSE benchmark
   useEffect(() => {
@@ -460,29 +694,36 @@ export default function BacktestPage() {
         priceScaleId: "left",
         title: "策略",
         priceFormat: pctFormat,
+        visible: showStrategyLineRef.current,
       });
 
-      const equityData: LineData<Time>[] = equityCurve.map((point) => ({
+      const equityFactors: LineData<Time>[] = equityCurve.map((point) => ({
         time: (point.timestamp / 1000) as Time,
-        value: ((point.equity / capital) - 1) * 100,
+        value: point.equity / capital,
       }));
 
-      equitySeries.setData(equityData);
+      equitySeries.setData(rebaseGrowthSeries(equityFactors, 0));
 
-      const benchmarkData = buildBenchmarkReturnSeries(
+      const benchmarkFactors: LineData<Time>[] = buildBenchmarkReturnSeries(
         equityCurve.map((p) => p.timestamp),
         tcseCandles
-      );
+      ).map((point) => ({
+        time: point.time,
+        value: 1 + point.value / 100,
+      }));
 
-      if (benchmarkData.length > 0) {
-        const benchmarkSeries = chart.addSeries(LineSeries, {
+      let benchmarkSeries: ReturnType<typeof chart.addSeries> | null = null;
+
+      if (benchmarkFactors.length > 0) {
+        benchmarkSeries = chart.addSeries(LineSeries, {
           color: "#f59e0b",
           lineWidth: 2,
           priceScaleId: "left",
           title: "TCSE",
           priceFormat: pctFormat,
+          visible: showTcseLineRef.current,
         });
-        benchmarkSeries.setData(benchmarkData);
+        benchmarkSeries.setData(rebaseGrowthSeries(benchmarkFactors, 0));
       }
 
       const baselineSeries = chart.addSeries(LineSeries, {
@@ -492,6 +733,7 @@ export default function BacktestPage() {
         priceScaleId: "left",
         priceLineVisible: false,
         lastValueVisible: false,
+        autoscaleInfoProvider: () => null,
       });
 
       baselineSeries.setData(
@@ -501,7 +743,89 @@ export default function BacktestPage() {
         }))
       );
 
-      chart.timeScale().fitContent();
+      const equityRebaseCache = new Map<number, LineData<Time>[]>();
+      const benchmarkRebaseCache = new Map<number, LineData<Time>[]>();
+      let lastBaseIdx = -1;
+      let dateSyncTimer: ReturnType<typeof setTimeout> | undefined;
+      let syncRafId: number | null = null;
+
+      const syncDateInputs = (timeRange: { from: Time; to: Time }) => {
+        if (applyingChartRangeRef.current || chartDateEditingRef.current) return;
+        const newStart = chartTimeToDateInput(timeRange.from);
+        const newEnd = chartTimeToDateInput(timeRange.to);
+        if (chartViewRangeRef.current.start !== newStart) {
+          chartViewRangeRef.current.start = newStart;
+          setChartViewStart(newStart);
+        }
+        if (chartViewRangeRef.current.end !== newEnd) {
+          chartViewRangeRef.current.end = newEnd;
+          setChartViewEnd(newEnd);
+        }
+      };
+
+      const syncToVisibleRange = (syncDates = false) => {
+        const timeRange = chart.timeScale().getVisibleRange();
+        if (!timeRange) return;
+
+        const baseIdx = findSeriesBaseIndex(equityFactors, timeRange.from);
+        if (baseIdx !== lastBaseIdx) {
+          lastBaseIdx = baseIdx;
+          equitySeries.setData(
+            getCachedRebasedSeries(equityRebaseCache, equityFactors, baseIdx)
+          );
+          if (benchmarkSeries && benchmarkFactors.length > 0) {
+            benchmarkSeries.setData(
+              getCachedRebasedSeries(
+                benchmarkRebaseCache,
+                benchmarkFactors,
+                baseIdx
+              )
+            );
+          }
+        }
+
+        if (syncDates) {
+          syncDateInputs(timeRange);
+          return;
+        }
+
+        if (dateSyncTimer) clearTimeout(dateSyncTimer);
+        dateSyncTimer = setTimeout(() => {
+          dateSyncTimer = undefined;
+          const latest = chart.timeScale().getVisibleRange();
+          if (latest) syncDateInputs(latest);
+        }, 250);
+      };
+
+      const scheduleVisibleRangeSync = () => {
+        if (syncRafId !== null) return;
+        syncRafId = requestAnimationFrame(() => {
+          syncRafId = null;
+          syncToVisibleRange();
+        });
+      };
+
+      chartCtxRef.current = {
+        chart,
+        equitySeries,
+        benchmarkSeries,
+        syncToVisibleRange: () => syncToVisibleRange(true),
+      };
+
+      const { start, end } = chartViewRangeRef.current;
+      const from = dateInputToChartTimeStart(start);
+      const to = dateInputToChartTimeEnd(end);
+      if (from && to && (from as number) <= (to as number)) {
+        applyingChartRangeRef.current = true;
+        chart.timeScale().setVisibleRange({ from, to });
+        applyingChartRangeRef.current = false;
+      } else {
+        chart.timeScale().fitContent();
+      }
+      syncToVisibleRange(true);
+      chart
+        .timeScale()
+        .subscribeVisibleLogicalRangeChange(scheduleVisibleRangeSync);
 
       if (cancelled) {
         chart.remove();
@@ -519,6 +843,12 @@ export default function BacktestPage() {
 
       return () => {
         ro.disconnect();
+        if (dateSyncTimer) clearTimeout(dateSyncTimer);
+        if (syncRafId !== null) cancelAnimationFrame(syncRafId);
+        chart
+          .timeScale()
+          .unsubscribeVisibleLogicalRangeChange(scheduleVisibleRangeSync);
+        chartCtxRef.current = null;
         chart.remove();
         chartRef.current = null;
       };
@@ -538,6 +868,7 @@ export default function BacktestPage() {
         chartRef.current.remove();
         chartRef.current = null;
       }
+      chartCtxRef.current = null;
     };
   }, [result, capital, klineInterval]);
 
@@ -740,7 +1071,7 @@ export default function BacktestPage() {
                 onChange={(e) =>
                   setConfig({
                     ...config,
-                    positionSize: (parseInt(e.target.value) || 40) / 100,
+                    positionSize: (parseInt(e.target.value) || 100) / 100,
                   })
                 }
                 className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
@@ -768,7 +1099,7 @@ export default function BacktestPage() {
                 onChange={(e) =>
                   setConfig({
                     ...config,
-                    stopLoss: (parseInt(e.target.value) || 8) / 100,
+                    stopLoss: (parseInt(e.target.value) || 4) / 100,
                   })
                 }
                 className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
@@ -782,7 +1113,7 @@ export default function BacktestPage() {
                 onChange={(e) =>
                   setConfig({
                     ...config,
-                    takeProfit: (parseInt(e.target.value) || 45) / 100,
+                    takeProfit: (parseInt(e.target.value) || 3) / 100,
                   })
                 }
                 className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
@@ -796,7 +1127,7 @@ export default function BacktestPage() {
                 onChange={(e) =>
                   setConfig({
                     ...config,
-                    trailingStop: (parseInt(e.target.value) || 12) / 100,
+                    trailingStop: (parseInt(e.target.value) || 5) / 100,
                   })
                 }
                 className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
@@ -819,10 +1150,66 @@ export default function BacktestPage() {
             </div>
           </div>
 
+          {mode === "portfolio" && (
+            <div className="mt-4 pt-4 border-t border-[#2a2d3a]">
+              <div className="flex items-center justify-between mb-3">
+                <label className="text-xs text-[#8b8fa3]">
+                  组合标的（已选 {portfolioSymbols.length}/{TRACKED_SYMBOLS.length}）
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPortfolioSymbols(DEFAULT_PORTFOLIO_SYMBOLS)}
+                    className="text-xs text-[#3b82f6] hover:text-[#3b82f6]/80 transition-colors"
+                  >
+                    全选
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPortfolioSymbols([])}
+                    className="text-xs text-[#8b8fa3] hover:text-[#e1e4ea] transition-colors"
+                  >
+                    清空
+                  </button>
+                </div>
+              </div>
+              <div className="grid grid-cols-5 sm:grid-cols-7 gap-x-3 gap-y-2 max-h-[140px] overflow-y-auto pr-1">
+                {TRACKED_SYMBOLS.map((s) => {
+                  const checked = portfolioSymbols.includes(s);
+                  return (
+                    <label
+                      key={s}
+                      className={cn(
+                        "flex items-center gap-1.5 text-xs font-data cursor-pointer select-none rounded px-1 py-0.5 transition-colors",
+                        checked ? "text-[#e1e4ea]" : "text-[#8b8fa3]"
+                      )}
+                    >
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(value) => {
+                          setPortfolioSymbols((prev) =>
+                            value
+                              ? sortSymbolsByTracked([...prev, s])
+                              : prev.filter((sym) => sym !== s)
+                          );
+                        }}
+                        className="border-[#2a2d3a] bg-[#0f1117] data-[state=checked]:bg-[#3b82f6] data-[state=checked]:border-[#3b82f6]"
+                      />
+                      {s}
+                    </label>
+                  );
+                })}
+              </div>
+              {portfolioSymbols.length === 0 && (
+                <p className="text-xs text-[#ef4444] mt-2">请至少选择一只标的</p>
+              )}
+            </div>
+          )}
+
           <div className="mt-4 flex flex-wrap gap-2">
             <button
               onClick={runBacktest}
-              disabled={loading}
+              disabled={loading || (mode === "portfolio" && portfolioSymbols.length === 0)}
               className={cn(
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all",
                 loading
@@ -844,6 +1231,15 @@ export default function BacktestPage() {
               <Check className="h-4 w-4" />
               应用策略
             </button>
+            {appliedMeta && (
+              <button
+                onClick={stopStrategy}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#ef4444]/10 text-[#ef4444] text-sm font-medium hover:bg-[#ef4444]/20 transition-colors"
+              >
+                <Square className="h-4 w-4" />
+                停止策略
+              </button>
+            )}
             <button
               onClick={() => {
                 setConfig(DEFAULT_STRATEGY_CONFIG);
@@ -853,6 +1249,7 @@ export default function BacktestPage() {
                 setCapital(100000);
                 setStartDate("");
                 setEndDate("");
+                setPortfolioSymbols(DEFAULT_PORTFOLIO_SYMBOLS);
               }}
               className="px-4 py-2 rounded-lg bg-[#2a2d3a] text-[#8b8fa3] hover:text-[#e1e4ea] text-sm transition-colors"
             >
@@ -1244,7 +1641,11 @@ export default function BacktestPage() {
               <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-3">
                 <span className="text-xs text-[#8b8fa3]">回测模式</span>
                 <div className="font-data text-lg font-bold text-[#e1e4ea] mt-1">
-                  {result.mode === "portfolio" ? "组合" : "单股"}
+                  {result.mode === "portfolio"
+                    ? result.symbols?.length
+                      ? `组合 ${result.symbols.length}只`
+                      : "组合"
+                    : "单股"}
                 </div>
               </div>
               <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-3">
@@ -1282,26 +1683,99 @@ export default function BacktestPage() {
 
             {/* Equity Curve */}
             <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-4 mb-6">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div className="flex flex-wrap items-center gap-4">
                   <h3 className="text-sm font-semibold text-[#e1e4ea]">
                     权益曲线（累计收益率）
                   </h3>
-                  <div className="flex items-center gap-3 text-xs text-[#8b8fa3]">
-                    <span className="flex items-center gap-1.5">
-                      <span className="inline-block w-3 h-0.5 bg-[#3b82f6] rounded" />
+                  <span className="text-xs text-[#8b8fa3]">
+                    缩放后为区间收益率
+                  </span>
+                  <div className="flex items-center gap-3 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setShowStrategyLine((v) => !v)}
+                      className={cn(
+                        "flex items-center gap-1.5 transition-opacity hover:text-[#e1e4ea]",
+                        showStrategyLine
+                          ? "text-[#8b8fa3] opacity-100"
+                          : "text-[#8b8fa3] opacity-40"
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "inline-block w-3 h-0.5 rounded",
+                          showStrategyLine ? "bg-[#3b82f6]" : "bg-[#8b8fa3]"
+                        )}
+                      />
                       策略
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                      <span className="inline-block w-3 h-0.5 bg-[#f59e0b] rounded" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowTcseLine((v) => !v)}
+                      className={cn(
+                        "flex items-center gap-1.5 transition-opacity hover:text-[#e1e4ea]",
+                        showTcseLine
+                          ? "text-[#8b8fa3] opacity-100"
+                          : "text-[#8b8fa3] opacity-40"
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "inline-block w-3 h-0.5 rounded",
+                          showTcseLine ? "bg-[#f59e0b]" : "bg-[#8b8fa3]"
+                        )}
+                      />
                       TCSE 大盘
-                    </span>
+                    </button>
                   </div>
                 </div>
-                {(result.startDate || result.endDate) && (
-                  <span className="text-xs text-[#8b8fa3] font-data">
-                    {result.startDate ?? "—"} ~ {result.endDate ?? "—"}
-                  </span>
+                {chartDataBounds && (
+                  <div className="flex items-center gap-2 text-xs text-[#8b8fa3]">
+                    <input
+                      type="date"
+                      value={chartViewStart}
+                      min={chartDataBounds.min}
+                      max={chartViewEnd || chartDataBounds.max}
+                      onFocus={() => {
+                        chartDateEditingRef.current = "start";
+                      }}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setChartViewStart(raw);
+                        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+                          commitChartViewStart(raw);
+                        }
+                      }}
+                      onBlur={(e) => {
+                        commitChartViewStart(e.target.value);
+                        chartDateEditingRef.current = null;
+                      }}
+                      className="px-2 py-1 rounded bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-xs focus:border-[#3b82f6] focus:outline-none [color-scheme:dark]"
+                    />
+                    <span>~</span>
+                    <input
+                      type="date"
+                      value={chartViewEnd}
+                      min={chartViewStart || chartDataBounds.min}
+                      max={chartDataBounds.max}
+                      onFocus={() => {
+                        chartDateEditingRef.current = "end";
+                      }}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setChartViewEnd(raw);
+                        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+                          commitChartViewEnd(raw);
+                        }
+                      }}
+                      onBlur={(e) => {
+                        commitChartViewEnd(e.target.value);
+                        chartDateEditingRef.current = null;
+                      }}
+                      className="px-2 py-1 rounded bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-xs focus:border-[#3b82f6] focus:outline-none [color-scheme:dark]"
+                    />
+                  </div>
                 )}
               </div>
               <div ref={chartContainerRef} className="w-full h-[300px]" />
