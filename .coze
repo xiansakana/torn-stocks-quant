@@ -15,5 +15,9 @@ run = ["bash", "./scripts/dev.sh"]
 build = ["bash", "./scripts/build.sh"]
 run = ["bash", "./scripts/start.sh"]
 
+[deploy.profile]
+kind = "service"
+flavor = "web"
+
 [subprojects]
 path = ["."]
