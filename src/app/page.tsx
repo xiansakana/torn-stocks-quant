@@ -17,6 +17,10 @@ import {
   BarChart3,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  getActiveStrategyConfig,
+  STRATEGY_APPLIED_EVENT,
+} from "@/lib/strategy-storage";
 
 export default function DashboardPage() {
   const [stocks, setStocks] = useState<StockInfo[]>([]);
@@ -24,6 +28,13 @@ export default function DashboardPage() {
   const [loadingStocks, setLoadingStocks] = useState(true);
   const [loadingSignals, setLoadingSignals] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<number>(0);
+  const [strategyConfig, setStrategyConfig] = useState(getActiveStrategyConfig);
+
+  useEffect(() => {
+    const refreshConfig = () => setStrategyConfig(getActiveStrategyConfig());
+    window.addEventListener(STRATEGY_APPLIED_EVENT, refreshConfig);
+    return () => window.removeEventListener(STRATEGY_APPLIED_EVENT, refreshConfig);
+  }, []);
 
   const fetchStocks = useCallback(async () => {
     try {
@@ -43,7 +54,9 @@ export default function DashboardPage() {
 
   const fetchSignals = useCallback(async () => {
     try {
-      const res = await fetch("/api/analysis");
+      const res = await fetch(
+        `/api/analysis?config=${encodeURIComponent(JSON.stringify(strategyConfig))}`
+      );
       if (res.ok) {
         const data = await res.json();
         setSignals(data.signals);
@@ -51,7 +64,7 @@ export default function DashboardPage() {
     } finally {
       setLoadingSignals(false);
     }
-  }, []);
+  }, [strategyConfig]);
 
   useEffect(() => {
     fetchStocks();

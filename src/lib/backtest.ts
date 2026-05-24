@@ -9,6 +9,9 @@ import type {
 } from "@/types/stock";
 import { computeIndicators, computeCombinedScore } from "./technical-analysis";
 
+/** Bars required before indicators are valid and trading can begin. */
+export const WARMUP_BARS = 50;
+
 /** Filter candles to a date range (inclusive). Dates are YYYY-MM-DD strings. */
 export function filterCandlesByDateRange(
   candles: OHLCVCandle[],
@@ -25,7 +28,69 @@ export function filterCandlesByDateRange(
   );
 }
 
-const WARMUP_BARS = 50;
+/**
+ * Prepare candles for backtest: keep warmup history before startDate so trading
+ * can begin on the selected start date instead of WARMUP_BARS later.
+ */
+export function prepareBacktestCandles(
+  candles: OHLCVCandle[],
+  startDate?: string,
+  endDate?: string,
+  warmupBars: number = WARMUP_BARS
+): { candles: OHLCVCandle[]; tradingStartTs: number } {
+  const sorted = [...candles].sort((a, b) => a.timestamp - b.timestamp);
+  const endTs = endDate
+    ? new Date(`${endDate}T23:59:59.999`).getTime()
+    : Number.POSITIVE_INFINITY;
+  const capped = sorted.filter((c) => c.timestamp <= endTs);
+
+  if (!startDate) {
+    const firstTradingTs =
+      capped[warmupBars]?.timestamp ?? capped[0]?.timestamp ?? 0;
+    return { candles: capped, tradingStartTs: firstTradingTs };
+  }
+
+  const startTs = new Date(`${startDate}T00:00:00`).getTime();
+  const startIdx = capped.findIndex((c) => c.timestamp >= startTs);
+  if (startIdx === -1) {
+    return { candles: [], tradingStartTs: startTs };
+  }
+
+  const sliceFrom = Math.max(0, startIdx - warmupBars);
+  return {
+    candles: capped.slice(sliceFrom),
+    tradingStartTs: startTs,
+  };
+}
+
+export interface BacktestOptions {
+  /** Only record trades / equity from this timestamp (ms). Used with warmup prefix. */
+  tradingStartTs?: number;
+}
+
+function trimBacktestResult(
+  result: BacktestResult,
+  tradingStartTs: number | undefined,
+  initialCapital: number
+): BacktestResult {
+  if (!tradingStartTs) return result;
+
+  const equityCurve = result.equityCurve.filter(
+    (p) => p.timestamp >= tradingStartTs
+  );
+  const trades = result.trades.filter((t) => t.entryDate >= tradingStartTs);
+
+  if (equityCurve.length === 0) {
+    equityCurve.push({ timestamp: tradingStartTs, equity: initialCapital });
+  }
+
+  return {
+    ...result,
+    trades,
+    equityCurve,
+    metrics: computeMetrics(trades, initialCapital, equityCurve),
+  };
+}
 
 interface Position {
   symbol?: string;
@@ -194,8 +259,10 @@ export function runSingleStockBacktest(
   candles: OHLCVCandle[],
   config: StrategyConfig,
   initialCapital: number = 100000,
-  symbol?: string
+  symbol?: string,
+  options?: BacktestOptions
 ): BacktestResult {
+  const tradingStartTs = options?.tradingStartTs ?? 0;
   const indicators = computeIndicators(candles, config);
   const trades: BacktestTrade[] = [];
   const equityCurve: { timestamp: number; equity: number }[] = [];
@@ -205,6 +272,8 @@ export function runSingleStockBacktest(
 
   for (let i = WARMUP_BARS; i < candles.length; i++) {
     const candle = candles[i];
+    if (candle.timestamp < tradingStartTs) continue;
+
     const price = candle.close;
     const { score, signal } = computeCombinedScore(i, candles, indicators, config);
 
@@ -250,23 +319,29 @@ export function runSingleStockBacktest(
 
   if (position && candles.length > 0) {
     const last = candles[candles.length - 1];
-    const { trade, proceeds } = closePosition(
-      position,
-      last.close,
-      last.timestamp,
-      config.sellFee,
-      "eod"
-    );
-    trades.push(trade);
-    cash += proceeds;
+    if (last.timestamp >= tradingStartTs) {
+      const { trade, proceeds } = closePosition(
+        position,
+        last.close,
+        last.timestamp,
+        config.sellFee,
+        "eod"
+      );
+      trades.push(trade);
+      cash += proceeds;
+    }
   }
 
-  return {
-    mode: "single",
-    trades,
-    metrics: computeMetrics(trades, initialCapital, equityCurve),
-    equityCurve,
-  };
+  return trimBacktestResult(
+    {
+      mode: "single",
+      trades,
+      metrics: computeMetrics(trades, initialCapital, equityCurve),
+      equityCurve,
+    },
+    tradingStartTs || undefined,
+    initialCapital
+  );
 }
 
 export interface StockCandleSeries {
@@ -278,8 +353,10 @@ export interface StockCandleSeries {
 export function runPortfolioBacktest(
   stockSeries: StockCandleSeries[],
   config: StrategyConfig,
-  initialCapital: number = 100000
+  initialCapital: number = 100000,
+  options?: BacktestOptions
 ): BacktestResult {
+  const tradingStartTs = options?.tradingStartTs ?? 0;
   const allTs = new Set<number>();
   for (const { candles } of stockSeries) {
     for (const c of candles) allTs.add(c.timestamp);
@@ -311,6 +388,8 @@ export function runPortfolioBacktest(
   const equityCurve: { timestamp: number; equity: number }[] = [];
 
   for (const ts of timestamps) {
+    if (ts < tradingStartTs) continue;
+
     const candidates: {
       symbol: string;
       candle: OHLCVCandle;
@@ -411,12 +490,16 @@ export function runPortfolioBacktest(
     cash += proceeds;
   }
 
-  return {
-    mode: "portfolio",
-    trades,
-    metrics: computeMetrics(trades, initialCapital, equityCurve),
-    equityCurve,
-  };
+  return trimBacktestResult(
+    {
+      mode: "portfolio",
+      trades,
+      metrics: computeMetrics(trades, initialCapital, equityCurve),
+      equityCurve,
+    },
+    tradingStartTs || undefined,
+    initialCapital
+  );
 }
 
 /** @deprecated Use runSingleStockBacktest — kept for compatibility */

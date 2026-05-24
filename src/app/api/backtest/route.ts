@@ -4,7 +4,8 @@ import { DEFAULT_STRATEGY_CONFIG, TRACKED_SYMBOLS } from "@/types/stock";
 import {
   runSingleStockBacktest,
   runPortfolioBacktest,
-  filterCandlesByDateRange,
+  prepareBacktestCandles,
+  WARMUP_BARS,
   type StockCandleSeries,
 } from "@/lib/backtest";
 
@@ -133,16 +134,17 @@ export async function POST(request: NextRequest) {
 
     if (mode === "portfolio") {
       const series: StockCandleSeries[] = [];
+      const fetchPages = startDate ? 5 : 3;
 
       await Promise.all(
         TRACKED_SYMBOLS.map(async (sym) => {
           try {
-            const candles = filterCandlesByDateRange(
-              await fetchCandles(sym, interval),
+            const { candles } = prepareBacktestCandles(
+              await fetchCandles(sym, interval, fetchPages),
               startDate,
               endDate
             );
-            if (candles.length >= 50) {
+            if (candles.length >= WARMUP_BARS) {
               series.push({ symbol: sym, candles });
             }
           } catch {
@@ -158,7 +160,13 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const result = runPortfolioBacktest(series, config, capital);
+      const tradingStartTs = startDate
+        ? new Date(`${startDate}T00:00:00`).getTime()
+        : undefined;
+
+      const result = runPortfolioBacktest(series, config, capital, {
+        tradingStartTs,
+      });
 
       return NextResponse.json({
         mode: "portfolio",
@@ -170,13 +178,14 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const allCandles = filterCandlesByDateRange(
-      await fetchCandles(symbol, interval),
+    const fetchPages = startDate ? 5 : 3;
+    const { candles: allCandles, tradingStartTs } = prepareBacktestCandles(
+      await fetchCandles(symbol, interval, fetchPages),
       startDate,
       endDate
     );
 
-    if (allCandles.length < 50) {
+    if (allCandles.length < WARMUP_BARS) {
       return NextResponse.json(
         { error: "Not enough historical data for backtesting" },
         { status: 400 }
@@ -187,7 +196,8 @@ export async function POST(request: NextRequest) {
       allCandles,
       config,
       capital,
-      symbol.toUpperCase()
+      symbol.toUpperCase(),
+      { tradingStartTs: startDate ? tradingStartTs : undefined }
     );
 
     return NextResponse.json({

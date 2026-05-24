@@ -22,13 +22,68 @@ import {
   DollarSign,
   BarChart3,
   Target,
+  Check,
+  Mail,
+  Bell,
+  BellOff,
+  Download,
+  Upload,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  buildBenchmarkReturnSeries,
+  fetchTcseCandles,
+} from "@/lib/benchmark";
+import {
+  loadAppliedStrategy,
+  saveAppliedStrategy,
+  loadAlertConfig,
+  saveAlertConfig,
+  exportAlertConfigFile,
+  importAlertConfigFromFile,
+  normalizeAlertConfig,
+  DEFAULT_ALERT_CONFIG,
+  type AppliedStrategyMeta,
+  type AlertConfigStorage,
+} from "@/lib/strategy-storage";
+
+/** HTML date input allows very large years in some browsers; clamp to 4-digit range. */
+const BACKTEST_DATE_MIN = "1970-01-01";
+const BACKTEST_DATE_MAX = new Date().toISOString().slice(0, 10);
+
+function sanitizeDateInput(
+  value: string,
+  min = BACKTEST_DATE_MIN,
+  max = BACKTEST_DATE_MAX
+): string {
+  if (!value) return "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return "";
+  const year = Number(value.slice(0, 4));
+  if (year < 1000 || year > 9999) return "";
+  const parsed = new Date(`${value}T12:00:00`);
+  if (Number.isNaN(parsed.getTime())) return "";
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
+}
+
+function handleDateChange(
+  raw: string,
+  min: string,
+  max: string,
+  setter: (v: string) => void
+) {
+  if (!raw) {
+    setter("");
+    return;
+  }
+  setter(sanitizeDateInput(raw, min, max));
+}
 
 export default function BacktestPage() {
   const [mode, setMode] = useState<"single" | "portfolio">("portfolio");
   const [symbol, setSymbol] = useState("TCI");
-  const [interval, setInterval] = useState<Interval>("d1");
+  const [klineInterval, setKlineInterval] = useState<Interval>("d1");
   const [capital, setCapital] = useState(100000);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -36,9 +91,213 @@ export default function BacktestPage() {
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [appliedMeta, setAppliedMeta] = useState<AppliedStrategyMeta | null>(null);
+  const [applySuccess, setApplySuccess] = useState<string | null>(null);
+
+  const [alertCheckInterval, setAlertCheckInterval] = useState("300");
+  const [emailHost, setEmailHost] = useState("");
+  const [emailPort, setEmailPort] = useState("587");
+  const [emailSecure, setEmailSecure] = useState("false");
+  const [emailUser, setEmailUser] = useState("");
+  const [emailPass, setEmailPass] = useState("");
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [notifyBuy, setNotifyBuy] = useState(true);
+  const [notifySell, setNotifySell] = useState(true);
+  const [alertStatus, setAlertStatus] = useState<{
+    isRunning: boolean;
+    lastCheck: string | null;
+    checkCount: number;
+    nextCheck: string | null;
+    lastBuyCount: number;
+    lastSellCount: number;
+  } | null>(null);
+  const [alertLoading, setAlertLoading] = useState(false);
+  const [testEmailLoading, setTestEmailLoading] = useState(false);
+  const [alertMessage, setAlertMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [alertHydrated, setAlertHydrated] = useState(false);
+  const [alertConfigSaved, setAlertConfigSaved] = useState(false);
 
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+
+  const applyAlertFields = useCallback((cfg: AlertConfigStorage) => {
+    const normalized = normalizeAlertConfig(cfg);
+    setAlertCheckInterval(normalized.checkInterval);
+    setEmailHost(normalized.emailHost);
+    setEmailPort(normalized.emailPort);
+    setEmailSecure(normalized.emailSecure);
+    setEmailUser(normalized.emailUser);
+    setEmailPass(normalized.emailPass);
+    setRecipientEmail(normalized.recipientEmail);
+    setNotifyBuy(normalized.notifyBuy);
+    setNotifySell(normalized.notifySell);
+  }, []);
+
+  const getCurrentAlertConfig = useCallback((): AlertConfigStorage => {
+    return normalizeAlertConfig({
+      checkInterval: alertCheckInterval,
+      emailHost,
+      emailPort,
+      emailSecure,
+      emailUser,
+      emailPass,
+      recipientEmail,
+      notifyBuy,
+      notifySell,
+    });
+  }, [alertCheckInterval, emailHost, emailPort, emailSecure, emailUser, emailPass, recipientEmail, notifyBuy, notifySell]);
+
+  useEffect(() => {
+    setAppliedMeta(loadAppliedStrategy());
+    applyAlertFields(loadAlertConfig() ?? DEFAULT_ALERT_CONFIG);
+    const applied = loadAppliedStrategy();
+    if (applied) setConfig(applied.config);
+    setAlertHydrated(true);
+  }, [applyAlertFields]);
+
+  useEffect(() => {
+    if (!alertHydrated) return;
+    saveAlertConfig(getCurrentAlertConfig());
+    setAlertConfigSaved(true);
+    const timer = setTimeout(() => setAlertConfigSaved(false), 2000);
+    return () => clearTimeout(timer);
+  }, [alertHydrated, getCurrentAlertConfig]);
+
+  useEffect(() => {
+    const fetchAlertStatus = async () => {
+      try {
+        const res = await fetch("/api/alerts/status");
+        const data = await res.json();
+        if (data.success) setAlertStatus(data.status);
+      } catch {
+        /* ignore */
+      }
+    };
+    fetchAlertStatus();
+    const timer = setInterval(fetchAlertStatus, 5000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const persistAlertConfig = useCallback(() => {
+    saveAlertConfig(getCurrentAlertConfig());
+  }, [getCurrentAlertConfig]);
+
+  const exportAlertConfig = useCallback(() => {
+    exportAlertConfigFile(getCurrentAlertConfig());
+    setAlertMessage({ type: "success", text: "配置已导出为 tsq-alert-config.json" });
+    setTimeout(() => setAlertMessage(null), 3000);
+  }, [getCurrentAlertConfig]);
+
+  const importAlertConfig = useCallback(async () => {
+    try {
+      const config = await importAlertConfigFromFile();
+      applyAlertFields(config);
+      setAlertMessage({ type: "success", text: "配置已导入并保存到本地" });
+      setTimeout(() => setAlertMessage(null), 3000);
+    } catch (err) {
+      setAlertMessage({
+        type: "error",
+        text: err instanceof Error ? err.message : "导入失败",
+      });
+    }
+  }, [applyAlertFields]);
+
+  const applyStrategy = useCallback(() => {
+    const meta = saveAppliedStrategy(config, "backtest");
+    setAppliedMeta(meta);
+    setApplySuccess("策略已应用，Dashboard 与策略信号页将使用当前参数");
+    setTimeout(() => setApplySuccess(null), 4000);
+  }, [config]);
+
+  const testEmail = useCallback(async () => {
+    if (!emailHost || !emailPort || !emailUser || !emailPass || !recipientEmail) {
+      setAlertMessage({ type: "error", text: "请填写完整的邮件配置" });
+      return;
+    }
+    setTestEmailLoading(true);
+    setAlertMessage(null);
+    persistAlertConfig();
+    try {
+      const res = await fetch("/api/email/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          emailConfig: {
+            host: emailHost,
+            port: parseInt(emailPort),
+            secure: emailSecure === "true",
+            user: emailUser,
+            pass: emailPass,
+          },
+          recipientEmail,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAlertMessage({ type: "error", text: data.error || "发送失败" });
+        return;
+      }
+      setAlertMessage({ type: "success", text: "测试邮件已发送" });
+    } catch {
+      setAlertMessage({ type: "error", text: "发送测试邮件失败" });
+    } finally {
+      setTestEmailLoading(false);
+    }
+  }, [emailHost, emailPort, emailSecure, emailUser, emailPass, recipientEmail, persistAlertConfig]);
+
+  const startAlerts = useCallback(async () => {
+    if (!emailHost || !emailPort || !emailUser || !emailPass || !recipientEmail) {
+      setAlertMessage({ type: "error", text: "请填写完整的邮件配置" });
+      return;
+    }
+    setAlertLoading(true);
+    setAlertMessage(null);
+    persistAlertConfig();
+    try {
+      const res = await fetch("/api/alerts/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          strategyConfig: config,
+          checkInterval: parseInt(alertCheckInterval),
+          emailConfig: {
+            host: emailHost,
+            port: parseInt(emailPort),
+            secure: emailSecure === "true",
+            user: emailUser,
+            pass: emailPass,
+          },
+          recipientEmail,
+          notifyBuy,
+          notifySell,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAlertMessage({ type: "error", text: data.error || "启动失败" });
+        return;
+      }
+      setAlertMessage({ type: "success", text: "信号提醒已启动，将使用当前策略参数" });
+      saveAppliedStrategy(config, "backtest");
+      setAppliedMeta(loadAppliedStrategy());
+    } catch {
+      setAlertMessage({ type: "error", text: "启动信号提醒失败" });
+    } finally {
+      setAlertLoading(false);
+    }
+  }, [config, alertCheckInterval, emailHost, emailPort, emailSecure, emailUser, emailPass, recipientEmail, notifyBuy, notifySell, persistAlertConfig]);
+
+  const stopAlerts = useCallback(async () => {
+    setAlertLoading(true);
+    try {
+      await fetch("/api/alerts/stop", { method: "POST" });
+      setAlertMessage({ type: "success", text: "信号提醒已停止" });
+    } catch {
+      setAlertMessage({ type: "error", text: "停止失败" });
+    } finally {
+      setAlertLoading(false);
+    }
+  }, []);
 
   const runBacktest = useCallback(async () => {
     setLoading(true);
@@ -49,7 +308,7 @@ export default function BacktestPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           symbol,
-          interval,
+          interval: klineInterval,
           capital,
           config,
           mode,
@@ -68,94 +327,147 @@ export default function BacktestPage() {
     } finally {
       setLoading(false);
     }
-  }, [symbol, interval, capital, config, mode, startDate, endDate]);
+  }, [symbol, klineInterval, capital, config, mode, startDate, endDate]);
 
-  // Render equity curve
+  // Render equity curve with TCSE benchmark
   useEffect(() => {
     if (!chartContainerRef.current || !result || result.equityCurve.length === 0) return;
 
-    if (chartRef.current) {
-      chartRef.current.remove();
-      chartRef.current = null;
-    }
+    let cancelled = false;
 
-    const container = chartContainerRef.current;
-    const chart = createChart(container, {
-      layout: {
-        background: { type: ColorType.Solid, color: "#1a1d29" },
-        textColor: "#8b8fa3",
-        fontFamily: "'JetBrains Mono', monospace",
-        fontSize: 11,
-      },
-      grid: {
-        vertLines: { color: "#2a2d3a40" },
-        horzLines: { color: "#2a2d3a40" },
-      },
-      rightPriceScale: {
-        visible: false,
-      },
-      leftPriceScale: {
-        visible: true,
-        borderColor: "#2a2d3a",
-      },
-      timeScale: {
-        borderColor: "#2a2d3a",
-      },
-      width: container.clientWidth,
-      height: 300,
-    });
+    const renderChart = async () => {
+      const equityCurve = result.equityCurve;
+      const startTs = equityCurve[0].timestamp;
+      const endTs = equityCurve[equityCurve.length - 1].timestamp;
 
-    chartRef.current = chart;
+      const tcseCandles = await fetchTcseCandles(klineInterval, startTs, endTs);
+      if (cancelled || !chartContainerRef.current) return;
 
-    const equitySeries = chart.addSeries(LineSeries, {
-      color: "#3b82f6",
-      lineWidth: 2,
-      priceScaleId: "left",
-      priceFormat: {
-        type: "custom",
+      if (chartRef.current) {
+        chartRef.current.remove();
+        chartRef.current = null;
+      }
+
+      const container = chartContainerRef.current;
+      const chart = createChart(container, {
+        layout: {
+          background: { type: ColorType.Solid, color: "#1a1d29" },
+          textColor: "#8b8fa3",
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: 11,
+        },
+        grid: {
+          vertLines: { color: "#2a2d3a40" },
+          horzLines: { color: "#2a2d3a40" },
+        },
+        rightPriceScale: {
+          visible: false,
+        },
+        leftPriceScale: {
+          visible: true,
+          borderColor: "#2a2d3a",
+        },
+        timeScale: {
+          borderColor: "#2a2d3a",
+        },
+        width: container.clientWidth,
+        height: 300,
+      });
+
+      chartRef.current = chart;
+
+      const pctFormat = {
+        type: "custom" as const,
         formatter: (price: number) =>
           `${price >= 0 ? "+" : ""}${price.toFixed(1)}%`,
-      },
-    });
+      };
 
-    const equityData: LineData<Time>[] = result.equityCurve.map((point) => ({
-      time: (point.timestamp / 1000) as Time,
-      value: ((point.equity / capital) - 1) * 100,
-    }));
+      const equitySeries = chart.addSeries(LineSeries, {
+        color: "#3b82f6",
+        lineWidth: 2,
+        priceScaleId: "left",
+        title: "策略",
+        priceFormat: pctFormat,
+      });
 
-    equitySeries.setData(equityData);
-
-    const baselineSeries = chart.addSeries(LineSeries, {
-      color: "#8b8fa340",
-      lineWidth: 1,
-      lineStyle: 2,
-      priceScaleId: "left",
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
-
-    baselineSeries.setData(
-      result.equityCurve.map((point) => ({
+      const equityData: LineData<Time>[] = equityCurve.map((point) => ({
         time: (point.timestamp / 1000) as Time,
-        value: 0,
-      }))
-    );
+        value: ((point.equity / capital) - 1) * 100,
+      }));
 
-    chart.timeScale().fitContent();
+      equitySeries.setData(equityData);
 
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        chart.applyOptions({ width: entry.contentRect.width });
+      const benchmarkData = buildBenchmarkReturnSeries(
+        equityCurve.map((p) => p.timestamp),
+        tcseCandles
+      );
+
+      if (benchmarkData.length > 0) {
+        const benchmarkSeries = chart.addSeries(LineSeries, {
+          color: "#f59e0b",
+          lineWidth: 2,
+          priceScaleId: "left",
+          title: "TCSE",
+          priceFormat: pctFormat,
+        });
+        benchmarkSeries.setData(benchmarkData);
       }
+
+      const baselineSeries = chart.addSeries(LineSeries, {
+        color: "#8b8fa340",
+        lineWidth: 1,
+        lineStyle: 2,
+        priceScaleId: "left",
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+
+      baselineSeries.setData(
+        equityCurve.map((point) => ({
+          time: (point.timestamp / 1000) as Time,
+          value: 0,
+        }))
+      );
+
+      chart.timeScale().fitContent();
+
+      if (cancelled) {
+        chart.remove();
+        return;
+      }
+
+      chartRef.current = chart;
+
+      const ro = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          chart.applyOptions({ width: entry.contentRect.width });
+        }
+      });
+      ro.observe(container);
+
+      return () => {
+        ro.disconnect();
+        chart.remove();
+        chartRef.current = null;
+      };
+    };
+
+    let chartCleanup: (() => void) | undefined;
+
+    renderChart().then((cleanup) => {
+      if (!cancelled) chartCleanup = cleanup;
+      else cleanup?.();
     });
-    ro.observe(container);
 
     return () => {
-      ro.disconnect();
-      chart.remove();
-      chartRef.current = null;
+      cancelled = true;
+      chartCleanup?.();
+      if (chartRef.current) {
+        chartRef.current.remove();
+        chartRef.current = null;
+      }
     };
-  }, [result, capital]);
+  }, [result, capital, klineInterval]);
 
   return (
     <AppShell>
@@ -166,9 +478,21 @@ export default function BacktestPage() {
             <h1 className="text-2xl font-bold text-[#e1e4ea]">历史回测</h1>
             <p className="text-sm text-[#8b8fa3] mt-1">
               组合回测 — 最多 {config.maxPositions} 只持仓，单仓 {Math.round(config.positionSize * 100)}%
+              {appliedMeta && (
+                <span className="ml-2 text-[#22c55e]">
+                  · 已应用策略 ({new Date(appliedMeta.appliedAt).toLocaleString("zh-CN")})
+                </span>
+              )}
             </p>
           </div>
         </div>
+
+        {applySuccess && (
+          <div className="bg-[#22c55e]/10 border border-[#22c55e]/20 rounded-lg p-3 mb-4 flex items-center gap-2 text-[#22c55e] text-sm">
+            <Check className="h-4 w-4 flex-shrink-0" />
+            {applySuccess}
+          </div>
+        )}
 
         {/* Config */}
         <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-4 mb-6">
@@ -207,8 +531,8 @@ export default function BacktestPage() {
             <div>
               <label className="text-xs text-[#8b8fa3] mb-1 block">K线周期</label>
               <select
-                value={interval}
-                onChange={(e) => setInterval(e.target.value as Interval)}
+                value={klineInterval}
+                onChange={(e) => setKlineInterval(e.target.value as Interval)}
                 className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
               >
                 {ALL_INTERVALS.map((iv) => (
@@ -236,9 +560,25 @@ export default function BacktestPage() {
               <input
                 type="date"
                 value={startDate}
-                max={endDate || undefined}
-                onChange={(e) => setStartDate(e.target.value)}
-                placeholder="全部历史"
+                min={BACKTEST_DATE_MIN}
+                max={endDate || BACKTEST_DATE_MAX}
+                onChange={(e) =>
+                  handleDateChange(
+                    e.target.value,
+                    BACKTEST_DATE_MIN,
+                    endDate || BACKTEST_DATE_MAX,
+                    setStartDate
+                  )
+                }
+                onBlur={(e) =>
+                  setStartDate(
+                    sanitizeDateInput(
+                      e.target.value,
+                      BACKTEST_DATE_MIN,
+                      endDate || BACKTEST_DATE_MAX
+                    )
+                  )
+                }
                 className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
               />
             </div>
@@ -249,11 +589,28 @@ export default function BacktestPage() {
               <input
                 type="date"
                 value={endDate}
-                min={startDate || undefined}
-                onChange={(e) => setEndDate(e.target.value)}
+                min={startDate || BACKTEST_DATE_MIN}
+                max={BACKTEST_DATE_MAX}
+                onChange={(e) =>
+                  handleDateChange(
+                    e.target.value,
+                    startDate || BACKTEST_DATE_MIN,
+                    BACKTEST_DATE_MAX,
+                    setEndDate
+                  )
+                }
+                onBlur={(e) =>
+                  setEndDate(
+                    sanitizeDateInput(
+                      e.target.value,
+                      startDate || BACKTEST_DATE_MIN,
+                      BACKTEST_DATE_MAX
+                    )
+                  )
+                }
                 className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
               />
-              <p className="text-[10px] text-[#8b8fa3] mt-1">留空表示不限</p>
+              <p className="text-[10px] text-[#8b8fa3] mt-1">留空表示不限 · 年份 4 位</p>
             </div>
           </div>
 
@@ -392,7 +749,7 @@ export default function BacktestPage() {
             </div>
           </div>
 
-          <div className="mt-4 flex gap-2">
+          <div className="mt-4 flex flex-wrap gap-2">
             <button
               onClick={runBacktest}
               disabled={loading}
@@ -411,11 +768,18 @@ export default function BacktestPage() {
               {loading ? "运行中..." : "运行回测"}
             </button>
             <button
+              onClick={applyStrategy}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#22c55e] text-white text-sm font-medium hover:bg-[#22c55e]/80 transition-colors"
+            >
+              <Check className="h-4 w-4" />
+              应用策略
+            </button>
+            <button
               onClick={() => {
                 setConfig(DEFAULT_STRATEGY_CONFIG);
                 setMode("portfolio");
                 setSymbol("TCI");
-                setInterval("d1");
+                setKlineInterval("d1");
                 setCapital(100000);
                 setStartDate("");
                 setEndDate("");
@@ -424,6 +788,207 @@ export default function BacktestPage() {
             >
               重置参数
             </button>
+          </div>
+        </div>
+
+        {/* Email Alerts */}
+        <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-4 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <Bell className="h-4 w-4 text-[#3b82f6]" />
+              <h3 className="text-sm font-semibold text-[#e1e4ea]">买卖信号邮件提醒</h3>
+              {alertStatus?.isRunning && (
+                <span className="px-2 py-0.5 rounded-full bg-[#22c55e]/15 text-[#22c55e] text-xs">
+                  运行中
+                </span>
+              )}
+              {alertConfigSaved && !alertStatus?.isRunning && (
+                <span className="text-xs text-[#8b8fa3]">已保存到本地</span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              {alertStatus?.isRunning && (
+                <span className="text-xs text-[#8b8fa3] font-data">
+                  买入 {alertStatus.lastBuyCount} · 卖出 {alertStatus.lastSellCount}
+                  {alertStatus.nextCheck && (
+                    <> · 下次 {new Date(alertStatus.nextCheck).toLocaleTimeString("zh-CN")}</>
+                  )}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={exportAlertConfig}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2a2d3a] text-[#8b8fa3] hover:text-[#e1e4ea] text-xs transition-colors"
+              >
+                <Download className="h-3.5 w-3.5" />
+                导出配置
+              </button>
+              <button
+                type="button"
+                onClick={importAlertConfig}
+                disabled={alertStatus?.isRunning}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2a2d3a] text-[#8b8fa3] hover:text-[#e1e4ea] text-xs transition-colors disabled:opacity-50"
+              >
+                <Upload className="h-3.5 w-3.5" />
+                导入配置
+              </button>
+            </div>
+          </div>
+
+          <p className="text-xs text-[#8b8fa3] mb-4">
+            定时检测全市场策略信号，当标的信号变为买入或卖出时发送邮件。首次启动仅记录基准，避免重复通知。配置会自动保存到浏览器 localStorage，也可导出/导入 JSON 文件。
+          </p>
+
+          <div className="grid grid-cols-3 gap-4 mb-4">
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">SMTP 服务器</label>
+              <input
+                type="text"
+                value={emailHost}
+                onChange={(e) => setEmailHost(e.target.value)}
+                placeholder="smtp.example.com"
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">端口</label>
+              <input
+                type="number"
+                value={emailPort}
+                onChange={(e) => setEmailPort(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">加密 (SSL/TLS)</label>
+              <select
+                value={emailSecure}
+                onChange={(e) => setEmailSecure(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] text-sm focus:border-[#3b82f6] focus:outline-none"
+              >
+                <option value="false">否 (STARTTLS)</option>
+                <option value="true">是 (SSL)</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">发件邮箱</label>
+              <input
+                type="email"
+                value={emailUser}
+                onChange={(e) => setEmailUser(e.target.value)}
+                placeholder="your@email.com"
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">邮箱密码 / 授权码</label>
+              <input
+                type="password"
+                value={emailPass}
+                onChange={(e) => setEmailPass(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">收件邮箱</label>
+              <input
+                type="email"
+                value={recipientEmail}
+                onChange={(e) => setRecipientEmail(e.target.value)}
+                placeholder="recipient@email.com"
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">检查间隔 (秒)</label>
+              <input
+                type="number"
+                min={60}
+                value={alertCheckInterval}
+                onChange={(e) => setAlertCheckInterval(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+            <div className="flex items-end gap-4">
+              <label className="flex items-center gap-2 text-sm text-[#e1e4ea] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={notifyBuy}
+                  onChange={(e) => setNotifyBuy(e.target.checked)}
+                  className="rounded border-[#2a2d3a]"
+                />
+                买入提醒
+              </label>
+              <label className="flex items-center gap-2 text-sm text-[#e1e4ea] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={notifySell}
+                  onChange={(e) => setNotifySell(e.target.checked)}
+                  className="rounded border-[#2a2d3a]"
+                />
+                卖出提醒
+              </label>
+            </div>
+          </div>
+
+          {alertMessage && (
+            <div
+              className={cn(
+                "rounded-lg p-3 mb-4 text-sm flex items-center gap-2",
+                alertMessage.type === "success"
+                  ? "bg-[#22c55e]/10 border border-[#22c55e]/20 text-[#22c55e]"
+                  : "bg-[#ef4444]/10 border border-[#ef4444]/20 text-[#ef4444]"
+              )}
+            >
+              {alertMessage.type === "success" ? (
+                <Check className="h-4 w-4" />
+              ) : (
+                <AlertTriangle className="h-4 w-4" />
+              )}
+              {alertMessage.text}
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={testEmail}
+              disabled={testEmailLoading || alertStatus?.isRunning}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#2a2d3a] text-[#e1e4ea] text-sm hover:bg-[#3b82f6]/20 transition-colors disabled:opacity-50"
+            >
+              {testEmailLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Mail className="h-4 w-4" />
+              )}
+              发送测试邮件
+            </button>
+            {!alertStatus?.isRunning ? (
+              <button
+                onClick={startAlerts}
+                disabled={alertLoading}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#3b82f6] text-white text-sm hover:bg-[#3b82f6]/80 transition-colors disabled:opacity-50"
+              >
+                {alertLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Bell className="h-4 w-4" />
+                )}
+                启动提醒
+              </button>
+            ) : (
+              <button
+                onClick={stopAlerts}
+                disabled={alertLoading}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#ef4444] text-white text-sm hover:bg-[#ef4444]/80 transition-colors disabled:opacity-50"
+              >
+                {alertLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <BellOff className="h-4 w-4" />
+                )}
+                停止提醒
+              </button>
+            )}
           </div>
         </div>
 
@@ -525,9 +1090,21 @@ export default function BacktestPage() {
             {/* Equity Curve */}
             <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-4 mb-6">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-[#e1e4ea]">
-                  权益曲线（累计收益率）
-                </h3>
+                <div className="flex items-center gap-4">
+                  <h3 className="text-sm font-semibold text-[#e1e4ea]">
+                    权益曲线（累计收益率）
+                  </h3>
+                  <div className="flex items-center gap-3 text-xs text-[#8b8fa3]">
+                    <span className="flex items-center gap-1.5">
+                      <span className="inline-block w-3 h-0.5 bg-[#3b82f6] rounded" />
+                      策略
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="inline-block w-3 h-0.5 bg-[#f59e0b] rounded" />
+                      TCSE 大盘
+                    </span>
+                  </div>
+                </div>
                 {(result.startDate || result.endDate) && (
                   <span className="text-xs text-[#8b8fa3] font-data">
                     {result.startDate ?? "—"} ~ {result.endDate ?? "—"}

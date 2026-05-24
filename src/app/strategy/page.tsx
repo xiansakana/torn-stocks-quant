@@ -12,12 +12,31 @@ import {
   Settings2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  getActiveStrategyConfig,
+  loadAppliedStrategy,
+  saveAppliedStrategy,
+  STRATEGY_APPLIED_EVENT,
+  type AppliedStrategyMeta,
+} from "@/lib/strategy-storage";
 
 export default function StrategyPage() {
   const [signals, setSignals] = useState<StrategySignal[]>([]);
   const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState<StrategyConfig>(DEFAULT_STRATEGY_CONFIG);
   const [showConfig, setShowConfig] = useState(false);
+  const [appliedMeta, setAppliedMeta] = useState<AppliedStrategyMeta | null>(null);
+
+  useEffect(() => {
+    setAppliedMeta(loadAppliedStrategy());
+    setConfig(getActiveStrategyConfig());
+    const onApplied = () => {
+      setAppliedMeta(loadAppliedStrategy());
+      setConfig(getActiveStrategyConfig());
+    };
+    window.addEventListener(STRATEGY_APPLIED_EVENT, onApplied);
+    return () => window.removeEventListener(STRATEGY_APPLIED_EVENT, onApplied);
+  }, []);
 
   const fetchSignals = useCallback(async () => {
     setLoading(true);
@@ -53,6 +72,11 @@ export default function StrategyPage() {
             </h1>
             <p className="text-sm text-[#8b8fa3] mt-1">
               组合量化策略 — 分散持仓 · 止损止盈 · RSI + MACD + 布林带
+              {appliedMeta && (
+                <span className="ml-2 text-[#22c55e]">
+                  · 已应用回测策略
+                </span>
+              )}
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -172,7 +196,11 @@ export default function StrategyPage() {
                 重置默认
               </button>
               <button
-                onClick={() => fetchSignals()}
+                onClick={() => {
+                  saveAppliedStrategy(config, "strategy");
+                  setAppliedMeta(loadAppliedStrategy());
+                  fetchSignals();
+                }}
                 className="px-3 py-1.5 rounded-lg bg-[#3b82f6] text-white text-sm hover:bg-[#3b82f6]/80 transition-colors"
               >
                 应用参数
