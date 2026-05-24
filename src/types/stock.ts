@@ -77,6 +77,29 @@ export interface StrategySignal {
   combinedScore: number;
 }
 
+/** Live portfolio position (paper trading) */
+export interface LivePosition {
+  symbol: string;
+  entryPrice: number;
+  entryDate: number;
+  shares: number;
+  cost: number;
+  peakPrice: number;
+}
+
+/** Paper-trading portfolio persisted in localStorage */
+export interface LivePortfolioState {
+  cash: number;
+  initialCapital: number;
+  positions: LivePosition[];
+  /** Last known signal per symbol — used to detect triggers */
+  lastSignals: Record<string, SignalType>;
+  /** First sync seeds signals without trading */
+  signalsSeeded: boolean;
+  appliedAt: number;
+  lastSyncedAt: number | null;
+}
+
 /** Open holding at a point in time */
 export interface PositionHolding {
   symbol?: string;

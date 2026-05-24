@@ -1,5 +1,6 @@
 import type { StrategyConfig } from "@/types/stock";
 import { DEFAULT_STRATEGY_CONFIG } from "@/types/stock";
+import { resetLivePortfolio } from "@/lib/live-portfolio";
 
 export const STRATEGY_STORAGE_KEY = "tsq-active-strategy";
 export const STRATEGY_APPLIED_EVENT = "tsq-strategy-applied";
@@ -9,6 +10,7 @@ export interface AppliedStrategyMeta {
   config: StrategyConfig;
   appliedAt: number;
   source: "backtest" | "strategy";
+  capital?: number;
 }
 
 export interface AlertConfigStorage {
@@ -75,14 +77,18 @@ export function loadAppliedStrategy(): AppliedStrategyMeta | null {
 
 export function saveAppliedStrategy(
   config: StrategyConfig,
-  source: AppliedStrategyMeta["source"] = "backtest"
+  source: AppliedStrategyMeta["source"] = "backtest",
+  capital: number = 100000
 ): AppliedStrategyMeta {
+  const appliedAt = Date.now();
   const meta: AppliedStrategyMeta = {
     config,
-    appliedAt: Date.now(),
+    appliedAt,
     source,
+    capital,
   };
   localStorage.setItem(STRATEGY_STORAGE_KEY, JSON.stringify(meta));
+  resetLivePortfolio(capital, appliedAt);
   window.dispatchEvent(new CustomEvent(STRATEGY_APPLIED_EVENT, { detail: meta }));
   return meta;
 }

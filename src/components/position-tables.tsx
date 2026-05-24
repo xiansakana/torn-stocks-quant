@@ -3,6 +3,7 @@
 import { Fragment, useState } from "react";
 import type { BacktestResult, BacktestTrade, PositionSnapshot } from "@/types/stock";
 import { cn } from "@/lib/utils";
+import { formatMoney, formatMoneySigned } from "@/lib/format-money";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 export function TradeRecordsTable({
@@ -92,16 +93,16 @@ function TradeRow({
         {new Date(trade.exitDate).toLocaleDateString("zh-CN")}
       </td>
       <td className="px-4 py-2 text-right font-data text-[#e1e4ea]">
-        {trade.entryPrice.toFixed(2)}
+        {formatMoney(trade.entryPrice)}
       </td>
       <td className="px-4 py-2 text-right font-data text-[#e1e4ea]">
-        {trade.exitPrice.toFixed(2)}
+        {formatMoney(trade.exitPrice)}
       </td>
       <td className="px-4 py-2 text-right font-data text-[#8b8fa3]">
-        {trade.shares.toLocaleString()}
+        {trade.shares.toLocaleString("en-US")}
       </td>
       <td className="px-4 py-2 text-right font-data text-[#f59e0b]">
-        {trade.fee.toFixed(2)}
+        {formatMoney(trade.fee)}
       </td>
       <td
         className={cn(
@@ -109,8 +110,7 @@ function TradeRow({
           trade.pnl >= 0 ? "text-[#22c55e]" : "text-[#ef4444]"
         )}
       >
-        {trade.pnl >= 0 ? "+" : ""}
-        {trade.pnl.toFixed(2)}
+        {formatMoneySigned(trade.pnl)}
       </td>
       <td
         className={cn(
@@ -186,16 +186,16 @@ export function PositionHistoryTable({
                     {new Date(snap.timestamp).toLocaleDateString("zh-CN")}
                   </td>
                   <td className="px-4 py-2 text-right font-data text-[#f59e0b]">
-                    {snap.cash.toFixed(2)}
+                    {formatMoney(snap.cash)}
                   </td>
                   <td className="px-4 py-2 text-right font-data text-[#e1e4ea]">
                     {snap.holdings.length}
                   </td>
                   <td className="px-4 py-2 text-right font-data text-[#3b82f6]">
-                    {snap.holdingsValue.toFixed(2)}
+                    {formatMoney(snap.holdingsValue)}
                   </td>
                   <td className="px-4 py-2 text-right font-data font-medium text-[#e1e4ea]">
-                    {snap.totalEquity.toFixed(2)}
+                    {formatMoney(snap.totalEquity)}
                   </td>
                   <td className="px-4 py-2 text-[#8b8fa3] text-xs">
                     {snap.holdings.length === 0
@@ -203,7 +203,7 @@ export function PositionHistoryTable({
                       : snap.holdings
                           .map(
                             (h) =>
-                              `${h.symbol} ${h.shares.toLocaleString()}@${h.price.toFixed(2)}`
+                              `${h.symbol} ${h.shares.toLocaleString("en-US")}@${formatMoney(h.price)}`
                           )
                           .join(" · ")}
                   </td>
@@ -262,16 +262,16 @@ export function HoldingsDetailTable({
               <td className="py-2 font-data text-[#3b82f6]">{h.symbol}</td>
             )}
             <td className="py-2 text-right font-data text-[#e1e4ea]">
-              {h.shares.toLocaleString()}
+              {h.shares.toLocaleString("en-US")}
             </td>
             <td className="py-2 text-right font-data text-[#e1e4ea]">
-              {h.price.toFixed(2)}
+              {formatMoney(h.price)}
             </td>
             <td className="py-2 text-right font-data text-[#8b8fa3]">
-              {h.cost.toFixed(2)}
+              {formatMoney(h.cost)}
             </td>
             <td className="py-2 text-right font-data text-[#e1e4ea]">
-              {h.marketValue.toFixed(2)}
+              {formatMoney(h.marketValue)}
             </td>
             <td
               className={cn(
@@ -279,8 +279,7 @@ export function HoldingsDetailTable({
                 h.unrealizedPnl >= 0 ? "text-[#22c55e]" : "text-[#ef4444]"
               )}
             >
-              {h.unrealizedPnl >= 0 ? "+" : ""}
-              {h.unrealizedPnl.toFixed(2)}
+              {formatMoneySigned(h.unrealizedPnl)}
             </td>
             <td
               className={cn(
@@ -317,13 +316,13 @@ export function PortfolioSummaryCards({
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-      <SummaryCard label="现金" value={cash.toFixed(2)} accent="amber" />
+      <SummaryCard label="现金" value={formatMoney(cash)} accent="amber" />
       <SummaryCard
         label="持仓市值"
-        value={holdingsValue.toFixed(2)}
+        value={formatMoney(holdingsValue)}
         accent="blue"
       />
-      <SummaryCard label="总权益" value={totalEquity.toFixed(2)} />
+      <SummaryCard label="总权益" value={formatMoney(totalEquity)} />
       <SummaryCard label="持仓数" value={String(holdingsCount)} />
       <SummaryCard
         label="总收益率"

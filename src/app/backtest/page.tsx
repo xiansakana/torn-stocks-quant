@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type { StrategyConfig, BacktestResult, Interval, BacktestHistoryParams, BacktestHistoryRecord } from "@/types/stock";
 import { DEFAULT_STRATEGY_CONFIG, TRACKED_SYMBOLS, ALL_INTERVALS, INTERVAL_LABELS } from "@/types/stock";
 import { AppShell } from "@/components/app-shell";
+import { MoneyInput } from "@/components/money-input";
 import {
   createChart,
   type IChartApi,
@@ -33,6 +34,7 @@ import {
   Eye,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatMoney } from "@/lib/format-money";
 import {
   TradeRecordsTable,
   PositionHistoryTable,
@@ -243,7 +245,7 @@ export default function BacktestPage() {
   }, [applyAlertFields]);
 
   const applyStrategy = useCallback(() => {
-    const meta = saveAppliedStrategy(config, "backtest");
+    const meta = saveAppliedStrategy(config, "backtest", capital);
     setAppliedMeta(meta);
     setApplySuccess("策略已应用，Dashboard 与策略信号页将使用当前参数");
     setTimeout(() => setApplySuccess(null), 4000);
@@ -318,7 +320,7 @@ export default function BacktestPage() {
         return;
       }
       setAlertMessage({ type: "success", text: "信号提醒已启动，将使用当前策略参数" });
-      saveAppliedStrategy(config, "backtest");
+      saveAppliedStrategy(config, "backtest", capital);
       setAppliedMeta(loadAppliedStrategy());
     } catch {
       setAlertMessage({ type: "error", text: "启动信号提醒失败" });
@@ -601,12 +603,10 @@ export default function BacktestPage() {
             {/* Capital */}
             <div>
               <label className="text-xs text-[#8b8fa3] mb-1 block">初始资金</label>
-              <input
-                type="number"
-                value={capital}
-                onChange={(e) => setCapital(parseInt(e.target.value) || 100000)}
-                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
-              />
+              <MoneyInput value={capital} onChange={setCapital} />
+              <p className="text-[10px] text-[#8b8fa3] mt-1">
+                支持 k / m / b / t 单位，如 100k、1.5m、2b
+              </p>
             </div>
 
             {/* Start Date */}
@@ -1260,7 +1260,7 @@ export default function BacktestPage() {
               <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-3">
                 <span className="text-xs text-[#8b8fa3]">总手续费</span>
                 <div className="font-data text-lg font-bold text-[#f59e0b] mt-1">
-                  {result.metrics.totalFees.toFixed(2)}
+                  {formatMoney(result.metrics.totalFees)}
                 </div>
               </div>
             </div>

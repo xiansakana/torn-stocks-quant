@@ -19,6 +19,7 @@ import {
   STRATEGY_APPLIED_EVENT,
   type AppliedStrategyMeta,
 } from "@/lib/strategy-storage";
+import { getLatestBacktestCapital } from "@/lib/backtest-history";
 
 export default function StrategyPage() {
   const [signals, setSignals] = useState<StrategySignal[]>([]);
@@ -197,7 +198,11 @@ export default function StrategyPage() {
               </button>
               <button
                 onClick={() => {
-                  saveAppliedStrategy(config, "strategy");
+                  saveAppliedStrategy(
+                    config,
+                    "strategy",
+                    getLatestBacktestCapital(100000)
+                  );
                   setAppliedMeta(loadAppliedStrategy());
                   fetchSignals();
                 }}
