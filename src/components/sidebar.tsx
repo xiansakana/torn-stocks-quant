@@ -7,6 +7,7 @@ import {
   TrendingUp,
   LineChart,
   FlaskConical,
+  Briefcase,
   Github,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -15,6 +16,7 @@ const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: BarChart3 },
   { href: "/strategy", label: "Strategy", icon: TrendingUp },
   { href: "/backtest", label: "Backtest", icon: FlaskConical },
+  { href: "/positions", label: "当前持仓", icon: Briefcase },
 ];
 
 export function Sidebar() {

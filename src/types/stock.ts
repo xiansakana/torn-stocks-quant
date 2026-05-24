@@ -77,14 +77,67 @@ export interface StrategySignal {
   combinedScore: number;
 }
 
+/** Open holding at a point in time */
+export interface PositionHolding {
+  symbol?: string;
+  shares: number;
+  price: number;
+  marketValue: number;
+  cost: number;
+  unrealizedPnl: number;
+  unrealizedPnlPercent: number;
+}
+
+/** Portfolio snapshot including cash */
+export interface PositionSnapshot {
+  timestamp: number;
+  cash: number;
+  holdings: PositionHolding[];
+  holdingsValue: number;
+  totalEquity: number;
+}
+
+/** Live / current portfolio state from strategy simulation */
+export interface CurrentPortfolioState {
+  timestamp: number;
+  cash: number;
+  holdings: PositionHolding[];
+  holdingsValue: number;
+  totalEquity: number;
+  initialCapital: number;
+  mode: "single" | "portfolio";
+  symbol?: string;
+}
+
 /** Backtest result */
 export interface BacktestResult {
   trades: BacktestTrade[];
   metrics: BacktestMetrics;
   equityCurve: { timestamp: number; equity: number }[];
+  positionHistory?: PositionSnapshot[];
+  initialCapital?: number;
   mode?: "single" | "portfolio";
   startDate?: string | null;
   endDate?: string | null;
+}
+
+/** Saved backtest run in localStorage */
+export interface BacktestHistoryParams {
+  mode: "single" | "portfolio";
+  symbol?: string;
+  interval: Interval;
+  capital: number;
+  config: StrategyConfig;
+  startDate?: string;
+  endDate?: string;
+}
+
+export interface BacktestHistoryRecord {
+  id: string;
+  ranAt: number;
+  label: string;
+  params: BacktestHistoryParams;
+  result: BacktestResult;
 }
 
 export interface BacktestTrade {

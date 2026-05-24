@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { StrategyConfig, BacktestResult, Interval } from "@/types/stock";
+import type { StrategyConfig, BacktestResult, Interval, BacktestHistoryParams, BacktestHistoryRecord } from "@/types/stock";
 import { DEFAULT_STRATEGY_CONFIG, TRACKED_SYMBOLS, ALL_INTERVALS, INTERVAL_LABELS } from "@/types/stock";
 import { AppShell } from "@/components/app-shell";
 import {
@@ -28,8 +28,22 @@ import {
   BellOff,
   Download,
   Upload,
+  History,
+  Trash2,
+  Eye,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  TradeRecordsTable,
+  PositionHistoryTable,
+} from "@/components/position-tables";
+import {
+  addBacktestHistoryRecord,
+  loadBacktestHistory,
+  deleteBacktestHistoryRecord,
+  clearBacktestHistory,
+  BACKTEST_HISTORY_EVENT,
+} from "@/lib/backtest-history";
 import {
   buildBenchmarkReturnSeries,
   fetchTcseCandles,
@@ -93,6 +107,10 @@ export default function BacktestPage() {
   const [error, setError] = useState<string | null>(null);
   const [appliedMeta, setAppliedMeta] = useState<AppliedStrategyMeta | null>(null);
   const [applySuccess, setApplySuccess] = useState<string | null>(null);
+  const [historyRecords, setHistoryRecords] = useState<BacktestHistoryRecord[]>([]);
+  const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
+  const [resultTab, setResultTab] = useState<"trades" | "positions">("trades");
+  const [viewingHistory, setViewingHistory] = useState(false);
 
   const [alertCheckInterval, setAlertCheckInterval] = useState("300");
   const [emailHost, setEmailHost] = useState("");
@@ -146,6 +164,28 @@ export default function BacktestPage() {
       notifySell,
     });
   }, [alertCheckInterval, emailHost, emailPort, emailSecure, emailUser, emailPass, recipientEmail, notifyBuy, notifySell]);
+
+  useEffect(() => {
+    setHistoryRecords(loadBacktestHistory());
+    const refresh = () => setHistoryRecords(loadBacktestHistory());
+    window.addEventListener(BACKTEST_HISTORY_EVENT, refresh);
+    return () => window.removeEventListener(BACKTEST_HISTORY_EVENT, refresh);
+  }, []);
+
+  const loadHistoryRecord = useCallback((record: BacktestHistoryRecord) => {
+    setResult(record.result);
+    setCapital(record.params.capital);
+    setMode(record.params.mode);
+    if (record.params.symbol) setSymbol(record.params.symbol);
+    setKlineInterval(record.params.interval);
+    setConfig(record.params.config);
+    setStartDate(record.params.startDate ?? "");
+    setEndDate(record.params.endDate ?? "");
+    setActiveHistoryId(record.id);
+    setViewingHistory(true);
+    setResultTab("trades");
+    setError(null);
+  }, []);
 
   useEffect(() => {
     setAppliedMeta(loadAppliedStrategy());
@@ -322,6 +362,21 @@ export default function BacktestPage() {
         return;
       }
       setResult(data as BacktestResult);
+      setViewingHistory(false);
+      setActiveHistoryId(null);
+      const params: BacktestHistoryParams = {
+        mode,
+        symbol: mode === "single" ? symbol : undefined,
+        interval: klineInterval,
+        capital,
+        config,
+        startDate: startDate || undefined,
+        endDate: endDate || undefined,
+      };
+      addBacktestHistoryRecord(params, {
+        ...(data as BacktestResult),
+        initialCapital: capital,
+      });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "回测请求失败");
     } finally {
@@ -992,6 +1047,123 @@ export default function BacktestPage() {
           </div>
         </div>
 
+        {/* Backtest History */}
+        <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-4 mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <History className="h-4 w-4 text-[#3b82f6]" />
+              <h3 className="text-sm font-semibold text-[#e1e4ea]">历史回测记录</h3>
+              <span className="text-xs text-[#8b8fa3]">
+                本地保存 {historyRecords.length} 条
+              </span>
+            </div>
+            {historyRecords.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm("确定清空全部历史回测记录？")) {
+                    clearBacktestHistory();
+                    if (viewingHistory) {
+                      setResult(null);
+                      setViewingHistory(false);
+                      setActiveHistoryId(null);
+                    }
+                  }
+                }}
+                className="text-xs text-[#8b8fa3] hover:text-[#ef4444] transition-colors"
+              >
+                清空全部
+              </button>
+            )}
+          </div>
+          {historyRecords.length === 0 ? (
+            <p className="text-xs text-[#8b8fa3]">
+              运行回测后自动保存到浏览器 localStorage，可在此查看历史结果
+            </p>
+          ) : (
+            <div className="overflow-x-auto max-h-[220px] overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-[#1a1d29]">
+                  <tr className="border-b border-[#2a2d3a] text-[#8b8fa3]">
+                    <th className="text-left px-3 py-2 font-medium">时间</th>
+                    <th className="text-left px-3 py-2 font-medium">标签</th>
+                    <th className="text-right px-3 py-2 font-medium">年化</th>
+                    <th className="text-right px-3 py-2 font-medium">总收益</th>
+                    <th className="text-right px-3 py-2 font-medium">交易</th>
+                    <th className="text-right px-3 py-2 font-medium">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {historyRecords.map((record) => (
+                    <tr
+                      key={record.id}
+                      className={cn(
+                        "border-b border-[#2a2d3a]/50 hover:bg-[#2a2d3a]/30",
+                        activeHistoryId === record.id && "bg-[#3b82f6]/10"
+                      )}
+                    >
+                      <td className="px-3 py-2 font-data text-[#8b8fa3] text-xs">
+                        {new Date(record.ranAt).toLocaleString("zh-CN")}
+                      </td>
+                      <td className="px-3 py-2 text-[#e1e4ea]">{record.label}</td>
+                      <td
+                        className={cn(
+                          "px-3 py-2 text-right font-data",
+                          record.result.metrics.annualizedReturn >= 0
+                            ? "text-[#22c55e]"
+                            : "text-[#ef4444]"
+                        )}
+                      >
+                        {(record.result.metrics.annualizedReturn * 100).toFixed(1)}%
+                      </td>
+                      <td
+                        className={cn(
+                          "px-3 py-2 text-right font-data",
+                          record.result.metrics.totalReturnPercent >= 0
+                            ? "text-[#22c55e]"
+                            : "text-[#ef4444]"
+                        )}
+                      >
+                        {(record.result.metrics.totalReturnPercent * 100).toFixed(2)}%
+                      </td>
+                      <td className="px-3 py-2 text-right font-data text-[#8b8fa3]">
+                        {record.result.metrics.totalTrades}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={() => loadHistoryRecord(record)}
+                            className="p-1.5 rounded hover:bg-[#3b82f6]/20 text-[#3b82f6]"
+                            title="查看"
+                          >
+                            <Eye className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              deleteBacktestHistoryRecord(record.id);
+                              if (activeHistoryId === record.id) {
+                                setResult(null);
+                                setViewingHistory(false);
+                                setActiveHistoryId(null);
+                              }
+                            }}
+                            className="p-1.5 rounded hover:bg-[#ef4444]/20 text-[#ef4444]"
+                            title="删除"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
         {/* Error */}
         {error && (
           <div className="bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg p-4 mb-6 flex items-center gap-2 text-[#ef4444] text-sm">
@@ -1003,6 +1175,12 @@ export default function BacktestPage() {
         {/* Results */}
         {result && (
           <>
+            {viewingHistory && (
+              <div className="bg-[#3b82f6]/10 border border-[#3b82f6]/20 rounded-lg px-4 py-2 mb-4 text-sm text-[#3b82f6] flex items-center gap-2">
+                <History className="h-4 w-4" />
+                正在查看历史回测记录
+              </div>
+            )}
             {/* Metrics */}
             <div className="grid grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
               <MetricCard
@@ -1114,132 +1292,48 @@ export default function BacktestPage() {
               <div ref={chartContainerRef} className="w-full h-[300px]" />
             </div>
 
-            {/* Trade List */}
+            {/* Trades / Position History */}
             <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a]">
               <div className="px-4 py-3 border-b border-[#2a2d3a] flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-[#e1e4ea]">
-                  交易记录
-                </h3>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setResultTab("trades")}
+                    className={cn(
+                      "px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                      resultTab === "trades"
+                        ? "bg-[#3b82f6] text-white"
+                        : "text-[#8b8fa3] hover:text-[#e1e4ea]"
+                    )}
+                  >
+                    交易记录
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setResultTab("positions")}
+                    className={cn(
+                      "px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                      resultTab === "positions"
+                        ? "bg-[#3b82f6] text-white"
+                        : "text-[#8b8fa3] hover:text-[#e1e4ea]"
+                    )}
+                  >
+                    历史持仓
+                  </button>
+                </div>
                 <span className="text-xs text-[#8b8fa3]">
-                  共 {result.trades.length} 笔交易
+                  {resultTab === "trades"
+                    ? `共 ${result.trades.length} 笔交易`
+                    : `共 ${result.positionHistory?.length ?? 0} 条持仓快照`}
                 </span>
               </div>
-              <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
-                <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-[#1a1d29]">
-                    <tr className="border-b border-[#2a2d3a] text-[#8b8fa3]">
-                      <th className="text-left px-4 py-2 font-medium">#</th>
-                      {result.mode === "portfolio" && (
-                        <th className="text-left px-4 py-2 font-medium">标的</th>
-                      )}
-                      <th className="text-left px-4 py-2 font-medium">
-                        买入日期
-                      </th>
-                      <th className="text-left px-4 py-2 font-medium">
-                        卖出日期
-                      </th>
-                      <th className="text-right px-4 py-2 font-medium">
-                        买入价
-                      </th>
-                      <th className="text-right px-4 py-2 font-medium">
-                        卖出价
-                      </th>
-                      <th className="text-right px-4 py-2 font-medium">
-                        数量
-                      </th>
-                      <th className="text-right px-4 py-2 font-medium">
-                        手续费
-                      </th>
-                      <th className="text-right px-4 py-2 font-medium">
-                        盈亏
-                      </th>
-                      <th className="text-right px-4 py-2 font-medium">
-                        单笔收益率
-                      </th>
-                      <th className="text-right px-4 py-2 font-medium">
-                        累计收益率
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(() => {
-                      let runningEquity = capital;
-                      const sortedTrades = [...result.trades].sort(
-                        (a, b) => a.exitDate - b.exitDate
-                      );
-                      return sortedTrades.map((trade, i) => {
-                        runningEquity += trade.pnl;
-                        const cumulativeReturn =
-                          (runningEquity - capital) / capital;
-                        return (
-                      <tr
-                        key={i}
-                        className="border-b border-[#2a2d3a]/50 hover:bg-[#2a2d3a]/30 transition-colors"
-                      >
-                        <td className="px-4 py-2 text-[#8b8fa3]">{i + 1}</td>
-                        {result.mode === "portfolio" && (
-                          <td className="px-4 py-2 font-data text-[#3b82f6]">
-                            {trade.symbol ?? "-"}
-                          </td>
-                        )}
-                        <td className="px-4 py-2 font-data text-[#e1e4ea]">
-                          {new Date(trade.entryDate).toLocaleDateString("zh-CN")}
-                        </td>
-                        <td className="px-4 py-2 font-data text-[#e1e4ea]">
-                          {new Date(trade.exitDate).toLocaleDateString("zh-CN")}
-                        </td>
-                        <td className="px-4 py-2 text-right font-data text-[#e1e4ea]">
-                          {trade.entryPrice.toFixed(2)}
-                        </td>
-                        <td className="px-4 py-2 text-right font-data text-[#e1e4ea]">
-                          {trade.exitPrice.toFixed(2)}
-                        </td>
-                        <td className="px-4 py-2 text-right font-data text-[#8b8fa3]">
-                          {trade.shares.toLocaleString()}
-                        </td>
-                        <td className="px-4 py-2 text-right font-data text-[#f59e0b]">
-                          {trade.fee.toFixed(2)}
-                        </td>
-                        <td
-                          className={cn(
-                            "px-4 py-2 text-right font-data",
-                            trade.pnl >= 0
-                              ? "text-[#22c55e]"
-                              : "text-[#ef4444]"
-                          )}
-                        >
-                          {trade.pnl >= 0 ? "+" : ""}
-                          {trade.pnl.toFixed(2)}
-                        </td>
-                        <td
-                          className={cn(
-                            "px-4 py-2 text-right font-data",
-                            trade.pnlPercent >= 0
-                              ? "text-[#22c55e]"
-                              : "text-[#ef4444]"
-                          )}
-                        >
-                          {trade.pnlPercent >= 0 ? "+" : ""}
-                          {(trade.pnlPercent * 100).toFixed(2)}%
-                        </td>
-                        <td
-                          className={cn(
-                            "px-4 py-2 text-right font-data font-medium",
-                            cumulativeReturn >= 0
-                              ? "text-[#22c55e]"
-                              : "text-[#ef4444]"
-                          )}
-                        >
-                          {cumulativeReturn >= 0 ? "+" : ""}
-                          {(cumulativeReturn * 100).toFixed(2)}%
-                        </td>
-                      </tr>
-                        );
-                      });
-                    })()}
-                  </tbody>
-                </table>
-              </div>
+              {resultTab === "trades" ? (
+                <TradeRecordsTable result={result} capital={capital} />
+              ) : (
+                <PositionHistoryTable
+                  snapshots={result.positionHistory ?? []}
+                />
+              )}
             </div>
           </>
         )}

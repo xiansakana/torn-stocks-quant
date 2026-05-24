@@ -6,6 +6,9 @@ import type {
   BacktestTrade,
   BacktestMetrics,
   SignalType,
+  PositionHolding,
+  PositionSnapshot,
+  CurrentPortfolioState,
 } from "@/types/stock";
 import { computeIndicators, computeCombinedScore } from "./technical-analysis";
 
@@ -66,6 +69,10 @@ export function prepareBacktestCandles(
 export interface BacktestOptions {
   /** Only record trades / equity from this timestamp (ms). Used with warmup prefix. */
   tradingStartTs?: number;
+  /** Close all open positions at end of series (default true). */
+  closeAtEnd?: boolean;
+  /** Record portfolio snapshots when composition changes (default true). */
+  recordSnapshots?: boolean;
 }
 
 function trimBacktestResult(
@@ -79,6 +86,9 @@ function trimBacktestResult(
     (p) => p.timestamp >= tradingStartTs
   );
   const trades = result.trades.filter((t) => t.entryDate >= tradingStartTs);
+  const positionHistory = result.positionHistory?.filter(
+    (p) => p.timestamp >= tradingStartTs
+  );
 
   if (equityCurve.length === 0) {
     equityCurve.push({ timestamp: tradingStartTs, equity: initialCapital });
@@ -88,8 +98,78 @@ function trimBacktestResult(
     ...result,
     trades,
     equityCurve,
+    positionHistory,
     metrics: computeMetrics(trades, initialCapital, equityCurve),
   };
+}
+
+function buildHoldingsFromMap(
+  positions: Record<string, Position>,
+  priceLookup: (symbol: string) => number | undefined
+): PositionHolding[] {
+  return Object.entries(positions)
+    .map(([symbol, pos]) => {
+      const price = priceLookup(symbol) ?? pos.entryPrice;
+      const marketValue = pos.shares * price;
+      const unrealizedPnl = marketValue - pos.cost;
+      return {
+        symbol,
+        shares: pos.shares,
+        price,
+        marketValue,
+        cost: pos.cost,
+        unrealizedPnl,
+        unrealizedPnlPercent: pos.cost > 0 ? unrealizedPnl / pos.cost : 0,
+      };
+    })
+    .sort((a, b) => b.marketValue - a.marketValue);
+}
+
+function buildSingleHolding(pos: Position, price: number): PositionHolding {
+  const marketValue = pos.shares * price;
+  const unrealizedPnl = marketValue - pos.cost;
+  return {
+    symbol: pos.symbol,
+    shares: pos.shares,
+    price,
+    marketValue,
+    cost: pos.cost,
+    unrealizedPnl,
+    unrealizedPnlPercent: pos.cost > 0 ? unrealizedPnl / pos.cost : 0,
+  };
+}
+
+function snapshotFingerprint(
+  cash: number,
+  holdings: PositionHolding[]
+): string {
+  const parts = holdings
+    .map((h) => `${h.symbol}:${h.shares}:${h.price.toFixed(4)}`)
+    .sort();
+  return `${cash.toFixed(2)}|${parts.join(",")}`;
+}
+
+function pushSnapshot(
+  history: PositionSnapshot[],
+  snapshot: PositionSnapshot
+): void {
+  const key = snapshotFingerprint(snapshot.cash, snapshot.holdings);
+  const last = history[history.length - 1];
+  if (
+    last &&
+    snapshotFingerprint(last.cash, last.holdings) === key &&
+    last.timestamp === snapshot.timestamp
+  ) {
+    return;
+  }
+  if (
+    last &&
+    snapshotFingerprint(last.cash, last.holdings) === key
+  ) {
+    history[history.length - 1] = snapshot;
+    return;
+  }
+  history.push(snapshot);
 }
 
 interface Position {
@@ -263,12 +343,30 @@ export function runSingleStockBacktest(
   options?: BacktestOptions
 ): BacktestResult {
   const tradingStartTs = options?.tradingStartTs ?? 0;
+  const closeAtEnd = options?.closeAtEnd !== false;
+  const recordSnapshots = options?.recordSnapshots !== false;
   const indicators = computeIndicators(candles, config);
   const trades: BacktestTrade[] = [];
   const equityCurve: { timestamp: number; equity: number }[] = [];
+  const positionHistory: PositionSnapshot[] = [];
 
   let cash = initialCapital;
   let position: Position | null = null;
+
+  const recordSingleSnapshot = (ts: number, price: number) => {
+    if (!recordSnapshots || ts < tradingStartTs) return;
+    const holdings = position
+      ? [buildSingleHolding(position, price)]
+      : [];
+    const holdingsValue = holdings.reduce((s, h) => s + h.marketValue, 0);
+    pushSnapshot(positionHistory, {
+      timestamp: ts,
+      cash,
+      holdings,
+      holdingsValue,
+      totalEquity: cash + holdingsValue,
+    });
+  };
 
   for (let i = WARMUP_BARS; i < candles.length; i++) {
     const candle = candles[i];
@@ -315,9 +413,10 @@ export function runSingleStockBacktest(
       timestamp: candle.timestamp,
       equity: cash + (position ? position.shares * price : 0),
     });
+    recordSingleSnapshot(candle.timestamp, price);
   }
 
-  if (position && candles.length > 0) {
+  if (closeAtEnd && position && candles.length > 0) {
     const last = candles[candles.length - 1];
     if (last.timestamp >= tradingStartTs) {
       const { trade, proceeds } = closePosition(
@@ -329,6 +428,8 @@ export function runSingleStockBacktest(
       );
       trades.push(trade);
       cash += proceeds;
+      position = null;
+      recordSingleSnapshot(last.timestamp, last.close);
     }
   }
 
@@ -338,6 +439,8 @@ export function runSingleStockBacktest(
       trades,
       metrics: computeMetrics(trades, initialCapital, equityCurve),
       equityCurve,
+      positionHistory,
+      initialCapital,
     },
     tradingStartTs || undefined,
     initialCapital
@@ -357,6 +460,8 @@ export function runPortfolioBacktest(
   options?: BacktestOptions
 ): BacktestResult {
   const tradingStartTs = options?.tradingStartTs ?? 0;
+  const closeAtEnd = options?.closeAtEnd !== false;
+  const recordSnapshots = options?.recordSnapshots !== false;
   const allTs = new Set<number>();
   for (const { candles } of stockSeries) {
     for (const c of candles) allTs.add(c.timestamp);
@@ -386,6 +491,22 @@ export function runPortfolioBacktest(
   const positions: Record<string, Position> = {};
   const trades: BacktestTrade[] = [];
   const equityCurve: { timestamp: number; equity: number }[] = [];
+  const positionHistory: PositionSnapshot[] = [];
+
+  const recordPortfolioSnapshot = (ts: number) => {
+    if (!recordSnapshots || ts < tradingStartTs) return;
+    const holdings = buildHoldingsFromMap(positions, (sym) =>
+      bySymbol[sym]?.map.get(ts)?.close
+    );
+    const holdingsValue = holdings.reduce((s, h) => s + h.marketValue, 0);
+    pushSnapshot(positionHistory, {
+      timestamp: ts,
+      cash,
+      holdings,
+      holdingsValue,
+      totalEquity: cash + holdingsValue,
+    });
+  };
 
   for (const ts of timestamps) {
     if (ts < tradingStartTs) continue;
@@ -474,20 +595,23 @@ export function runPortfolioBacktest(
       if (candle) equity += positions[sym].shares * candle.close;
     }
     equityCurve.push({ timestamp: ts, equity });
+    recordPortfolioSnapshot(ts);
   }
 
-  for (const sym of Object.keys(positions)) {
-    const pos = positions[sym];
-    const last = bySymbol[sym].candles.at(-1)!;
-    const { trade, proceeds } = closePosition(
-      pos,
-      last.close,
-      last.timestamp,
-      config.sellFee,
-      "eod"
-    );
-    trades.push(trade);
-    cash += proceeds;
+  if (closeAtEnd) {
+    for (const sym of Object.keys(positions)) {
+      const pos = positions[sym];
+      const last = bySymbol[sym].candles.at(-1)!;
+      const { trade, proceeds } = closePosition(
+        pos,
+        last.close,
+        last.timestamp,
+        config.sellFee,
+        "eod"
+      );
+      trades.push(trade);
+      cash += proceeds;
+    }
   }
 
   return trimBacktestResult(
@@ -496,10 +620,81 @@ export function runPortfolioBacktest(
       trades,
       metrics: computeMetrics(trades, initialCapital, equityCurve),
       equityCurve,
+      positionHistory,
+      initialCapital,
     },
     tradingStartTs || undefined,
     initialCapital
   );
+}
+
+/** Simulate portfolio through latest data and return open holdings + cash. */
+export function runPortfolioCurrentState(
+  stockSeries: StockCandleSeries[],
+  config: StrategyConfig,
+  initialCapital: number = 100000
+): CurrentPortfolioState {
+  const result = runPortfolioBacktest(stockSeries, config, initialCapital, {
+    closeAtEnd: false,
+    recordSnapshots: true,
+  });
+  const snap = result.positionHistory?.at(-1);
+  if (!snap) {
+    return {
+      timestamp: Date.now(),
+      cash: initialCapital,
+      holdings: [],
+      holdingsValue: 0,
+      totalEquity: initialCapital,
+      initialCapital,
+      mode: "portfolio",
+    };
+  }
+  return {
+    timestamp: snap.timestamp,
+    cash: snap.cash,
+    holdings: snap.holdings,
+    holdingsValue: snap.holdingsValue,
+    totalEquity: snap.totalEquity,
+    initialCapital,
+    mode: "portfolio",
+  };
+}
+
+/** Simulate single-stock strategy through latest data and return open holdings + cash. */
+export function runSingleStockCurrentState(
+  candles: OHLCVCandle[],
+  config: StrategyConfig,
+  initialCapital: number = 100000,
+  symbol?: string
+): CurrentPortfolioState {
+  const result = runSingleStockBacktest(candles, config, initialCapital, symbol, {
+    closeAtEnd: false,
+    recordSnapshots: true,
+  });
+  const snap = result.positionHistory?.at(-1);
+  if (!snap) {
+    return {
+      timestamp: candles.at(-1)?.timestamp ?? Date.now(),
+      cash: initialCapital,
+      holdings: [],
+      holdingsValue: 0,
+      totalEquity: initialCapital,
+      initialCapital,
+      mode: "single",
+      symbol,
+    };
+  }
+  return {
+    timestamp: snap.timestamp,
+    cash: snap.cash,
+    holdings: snap.holdings,
+    holdingsValue: snap.holdingsValue,
+    totalEquity: snap.totalEquity,
+    initialCapital,
+    mode: "single",
+    symbol,
+  };
 }
 
 /** @deprecated Use runSingleStockBacktest — kept for compatibility */
