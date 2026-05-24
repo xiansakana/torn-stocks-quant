@@ -191,6 +191,66 @@ export function computeIndicators(
 
 // ─── Signal Generation ──────────────────────────────────────────
 
+export interface CombinedScoreResult {
+  score: number;
+  signal: SignalType;
+  rsiSignal: SignalType;
+  macdSignal: SignalType;
+  bollingerSignal: SignalType;
+}
+
+export function computeCombinedScore(
+  index: number,
+  candles: OHLCVCandle[],
+  indicators: TechnicalIndicators,
+  config: StrategyConfig
+): CombinedScoreResult {
+  const price = candles[index].close;
+  const rsiValue = indicators.rsi[index];
+  const macdData = indicators.macd;
+  const bb = indicators.bollingerBands;
+  const sma50 = indicators.sma50[index];
+
+  const rsiSignal = getRSISignal(rsiValue, config);
+  const macdSignal = getMACDSignal(
+    macdData.macd[index],
+    macdData.signal[index],
+    macdData.macd[index - 1] ?? NaN,
+    macdData.signal[index - 1] ?? NaN
+  );
+  const bollingerSignal = getBollingerSignal(
+    price,
+    bb.upper[index],
+    bb.lower[index],
+    bb.middle[index]
+  );
+
+  const rsiScore = rsiSignal === "BUY" ? 1 : rsiSignal === "SELL" ? -1 : 0;
+  const macdScore = macdSignal === "BUY" ? 1 : macdSignal === "SELL" ? -1 : 0;
+  const bbScore = bollingerSignal === "BUY" ? 1 : bollingerSignal === "SELL" ? -1 : 0;
+
+  let trendBonus = 0;
+  if (!isNaN(sma50)) {
+    trendBonus = price > sma50 ? 0.15 : -0.15;
+  }
+  const hist = macdData.histogram[index];
+  if (!isNaN(hist) && hist > 0) trendBonus += 0.05;
+
+  const score = rsiScore * 0.35 + macdScore * 0.35 + bbScore * 0.2 + trendBonus;
+
+  let signal: SignalType = "HOLD";
+  if (score > config.buyThreshold) signal = "BUY";
+  else if (score < config.sellThreshold) signal = "SELL";
+
+  return {
+    score: Math.round(score * 100) / 100,
+    signal,
+    rsiSignal,
+    macdSignal,
+    bollingerSignal,
+  };
+}
+
 function getRSISignal(rsiValue: number, config: StrategyConfig): SignalType {
   if (isNaN(rsiValue)) return "HOLD";
   if (rsiValue <= config.rsiOversold) return "BUY";
@@ -242,37 +302,14 @@ export function generateSignal(
 ): StrategySignal {
   const indicators = computeIndicators(candles, config);
   const len = candles.length - 1;
+  const { score, signal, rsiSignal, macdSignal, bollingerSignal } =
+    computeCombinedScore(len, candles, indicators, config);
 
-  const rsiValue = indicators.rsi[len];
-  const macdData = indicators.macd;
-  const bb = indicators.bollingerBands;
-
-  const rsiSignal = getRSISignal(rsiValue, config);
-  const macdSignal = getMACDSignal(
-    macdData.macd[len],
-    macdData.signal[len],
-    macdData.macd[len - 1] ?? NaN,
-    macdData.signal[len - 1] ?? NaN
-  );
-  const bollingerSignal = getBollingerSignal(price, bb.upper[len], bb.lower[len], bb.middle[len]);
-
-  // Combined scoring: weighted average
-  // BUY = +1, SELL = -1, HOLD = 0
-  const rsiScore = rsiSignal === "BUY" ? 1 : rsiSignal === "SELL" ? -1 : 0;
-  const macdScore = macdSignal === "BUY" ? 1 : macdSignal === "SELL" ? -1 : 0;
-  const bbScore = bollingerSignal === "BUY" ? 1 : bollingerSignal === "SELL" ? -1 : 0;
-
-  // RSI: 40%, MACD: 35%, Bollinger: 25%
-  const combinedScore = rsiScore * 0.4 + macdScore * 0.35 + bbScore * 0.25;
-
-  let signal: SignalType = "HOLD";
   let strength = 0;
-  if (combinedScore > 0.2) {
-    signal = "BUY";
-    strength = Math.min(100, Math.round(combinedScore * 100));
-  } else if (combinedScore < -0.2) {
-    signal = "SELL";
-    strength = Math.min(100, Math.round(Math.abs(combinedScore) * 100));
+  if (signal === "BUY") {
+    strength = Math.min(100, Math.round(score * 100));
+  } else if (signal === "SELL") {
+    strength = Math.min(100, Math.round(Math.abs(score) * 100));
   }
 
   return {
@@ -281,10 +318,10 @@ export function generateSignal(
     price,
     signal,
     strength,
-    rsi: rsiValue,
+    rsi: indicators.rsi[len],
     macdSignal,
     bollingerSignal,
     rsiSignal,
-    combinedScore: Math.round(combinedScore * 100) / 100,
+    combinedScore: score,
   };
 }

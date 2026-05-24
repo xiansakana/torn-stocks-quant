@@ -82,9 +82,13 @@ export interface BacktestResult {
   trades: BacktestTrade[];
   metrics: BacktestMetrics;
   equityCurve: { timestamp: number; equity: number }[];
+  mode?: "single" | "portfolio";
+  startDate?: string | null;
+  endDate?: string | null;
 }
 
 export interface BacktestTrade {
+  symbol?: string;
   entryDate: number;
   exitDate: number;
   entryPrice: number;
@@ -120,19 +124,49 @@ export interface StrategyConfig {
   macdSignal: number;
   bollingerPeriod: number;
   bollingerStdDev: number;
-  sellFee: number; // 0.001 = 0.1%
+  sellFee: number;
+  /** Combined score above this → BUY candidate */
+  buyThreshold: number;
+  /** Combined score below this → SELL */
+  sellThreshold: number;
+  /** Minimum score to actually open a position */
+  minBuyScore: number;
+  /** Exit on SELL signal (if false, only stop/take-profit/trailing) */
+  exitOnSellSignal: boolean;
+  /** Fraction of capital per position (0.4 = 40%) */
+  positionSize: number;
+  /** Max simultaneous holdings in portfolio mode */
+  maxPositions: number;
+  /** Stop loss as fraction (0.08 = -8%) */
+  stopLoss: number;
+  /** Take profit as fraction */
+  takeProfit: number;
+  /** Trailing stop from peak (0.12 = -12% from high) */
+  trailingStop: number;
+  /** Scale position size by signal strength */
+  scaleByScore: boolean;
 }
 
 export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   rsiPeriod: 14,
-  rsiOverbought: 70,
-  rsiOversold: 30,
+  rsiOverbought: 58,
+  rsiOversold: 42,
   macdFast: 12,
   macdSlow: 26,
   macdSignal: 9,
   bollingerPeriod: 20,
   bollingerStdDev: 2,
   sellFee: 0.001,
+  buyThreshold: 0.25,
+  sellThreshold: -0.3,
+  minBuyScore: 0.4,
+  exitOnSellSignal: true,
+  positionSize: 0.48,
+  maxPositions: 4,
+  stopLoss: 0.06,
+  takeProfit: 0.42,
+  trailingStop: 0.08,
+  scaleByScore: true,
 };
 
 /** Tracked stock symbols */
@@ -144,6 +178,11 @@ export const TRACKED_SYMBOLS = [
 ] as const;
 
 export type TrackedSymbol = (typeof TRACKED_SYMBOLS)[number];
+
+/** All supported chart / backtest intervals (finest → coarsest) */
+export const ALL_INTERVALS: Interval[] = [
+  "m1", "m5", "m15", "m30", "h1", "h2", "h4", "h6", "h12", "d1", "w1", "n1", "y1",
+];
 
 /** Interval display labels */
 export const INTERVAL_LABELS: Record<Interval, string> = {

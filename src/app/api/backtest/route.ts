@@ -1,12 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { OHLCVCandle, StrategyConfig } from "@/types/stock";
-import { DEFAULT_STRATEGY_CONFIG } from "@/types/stock";
-import { runBacktest } from "@/lib/backtest";
+import { DEFAULT_STRATEGY_CONFIG, TRACKED_SYMBOLS } from "@/types/stock";
+import {
+  runSingleStockBacktest,
+  runPortfolioBacktest,
+  filterCandlesByDateRange,
+  type StockCandleSeries,
+} from "@/lib/backtest";
 
 const TORNSY_API_BASE = "https://tornsy.com/api";
 
 interface RawOHLCV {
   data: [number, string, string, string, string, number][];
+}
+
+interface RawTick {
+  data: [number, string, number][];
 }
 
 function parseOHLCV(raw: RawOHLCV): OHLCVCandle[] {
@@ -20,6 +29,75 @@ function parseOHLCV(raw: RawOHLCV): OHLCVCandle[] {
   }));
 }
 
+function parseTicksToOHLCV(raw: RawTick): OHLCVCandle[] {
+  const buckets = new Map<number, number[]>();
+
+  for (const [timestamp, priceStr] of raw.data) {
+    const price = parseFloat(priceStr);
+    const minuteKey = Math.floor(timestamp / 60) * 60;
+    const prices = buckets.get(minuteKey) ?? [];
+    prices.push(price);
+    buckets.set(minuteKey, prices);
+  }
+
+  return [...buckets.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([minuteKey, prices]) => ({
+      timestamp: minuteKey * 1000,
+      open: prices[0],
+      high: Math.max(...prices),
+      low: Math.min(...prices),
+      close: prices[prices.length - 1],
+      volume: prices.length,
+    }));
+}
+
+function buildHistoryUrl(symbol: string, interval: string, to?: number): string {
+  let url = `${TORNSY_API_BASE}/${symbol.toLowerCase()}`;
+  const queryParams: string[] = [];
+
+  if (interval !== "m1") {
+    queryParams.push(`interval=${interval}`);
+  }
+  if (to) {
+    queryParams.push(`to=${to}`);
+  }
+  if (queryParams.length > 0) {
+    url += `?${queryParams.join("&")}`;
+  }
+
+  return url;
+}
+
+async function fetchCandles(
+  symbol: string,
+  interval: string,
+  pages = 3
+): Promise<OHLCVCandle[]> {
+  let allCandles: OHLCVCandle[] = [];
+  let to: number | undefined;
+
+  for (let page = 0; page < pages; page++) {
+    const url = buildHistoryUrl(symbol, interval, to);
+    const res = await fetch(url, { next: { revalidate: 300 } });
+    if (!res.ok) break;
+
+    const data = await res.json();
+    const candles =
+      interval === "m1"
+        ? parseTicksToOHLCV(data as RawTick)
+        : parseOHLCV(data as RawOHLCV);
+
+    if (candles.length === 0) break;
+    allCandles = [...candles, ...allCandles];
+
+    if (candles.length < 1000) break;
+    to = Math.floor(candles[0].timestamp / 1000);
+  }
+
+  return allCandles;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -27,39 +105,76 @@ export async function POST(request: NextRequest) {
       symbol = "TCI",
       interval = "d1",
       capital = 100000,
+      mode = "portfolio",
+      startDate,
+      endDate,
       config: configOverride,
     } = body as {
       symbol?: string;
       interval?: string;
       capital?: number;
+      mode?: "single" | "portfolio";
+      startDate?: string;
+      endDate?: string;
       config?: Partial<StrategyConfig>;
     };
 
-    const config: StrategyConfig = { ...DEFAULT_STRATEGY_CONFIG, ...configOverride };
-
-    // Fetch historical data - may need multiple pages
-    let allCandles: OHLCVCandle[] = [];
-    let to: number | undefined;
-
-    // Fetch up to 3 pages (3000 candles)
-    for (let page = 0; page < 3; page++) {
-      let url = `${TORNSY_API_BASE}/${symbol.toLowerCase()}?interval=${interval}`;
-      if (to) url += `&to=${to}`;
-
-      const res = await fetch(url, { next: { revalidate: 300 } });
-      if (!res.ok) break;
-
-      const data: RawOHLCV = await res.json();
-      const candles = parseOHLCV(data);
-
-      if (candles.length === 0) break;
-      allCandles = [...candles, ...allCandles]; // Prepend older data
-
-      if (candles.length < 1000) break; // No more data
-
-      // Set 'to' to the oldest timestamp for next page
-      to = Math.floor(candles[0].timestamp / 1000);
+    if (startDate && endDate && startDate > endDate) {
+      return NextResponse.json(
+        { error: "开始日期不能晚于结束日期" },
+        { status: 400 }
+      );
     }
+
+    const config: StrategyConfig = {
+      ...DEFAULT_STRATEGY_CONFIG,
+      ...configOverride,
+    };
+
+    if (mode === "portfolio") {
+      const series: StockCandleSeries[] = [];
+
+      await Promise.all(
+        TRACKED_SYMBOLS.map(async (sym) => {
+          try {
+            const candles = filterCandlesByDateRange(
+              await fetchCandles(sym, interval),
+              startDate,
+              endDate
+            );
+            if (candles.length >= 50) {
+              series.push({ symbol: sym, candles });
+            }
+          } catch {
+            /* skip failed symbols */
+          }
+        })
+      );
+
+      if (series.length === 0) {
+        return NextResponse.json(
+          { error: "Not enough historical data for portfolio backtesting" },
+          { status: 400 }
+        );
+      }
+
+      const result = runPortfolioBacktest(series, config, capital);
+
+      return NextResponse.json({
+        mode: "portfolio",
+        symbols: series.map((s) => s.symbol),
+        interval,
+        startDate: startDate ?? null,
+        endDate: endDate ?? null,
+        ...result,
+      });
+    }
+
+    const allCandles = filterCandlesByDateRange(
+      await fetchCandles(symbol, interval),
+      startDate,
+      endDate
+    );
 
     if (allCandles.length < 50) {
       return NextResponse.json(
@@ -68,11 +183,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = runBacktest(allCandles, config, capital);
+    const result = runSingleStockBacktest(
+      allCandles,
+      config,
+      capital,
+      symbol.toUpperCase()
+    );
 
     return NextResponse.json({
-      symbol,
+      mode: "single",
+      symbol: symbol.toUpperCase(),
       interval,
+      startDate: startDate ?? null,
+      endDate: endDate ?? null,
       ...result,
     });
   } catch (error: unknown) {
