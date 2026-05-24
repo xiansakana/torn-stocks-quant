@@ -168,10 +168,17 @@ export default function BacktestPage() {
   }, [alertCheckInterval, emailHost, emailPort, emailSecure, emailUser, emailPass, recipientEmail, notifyBuy, notifySell]);
 
   useEffect(() => {
-    setHistoryRecords(loadBacktestHistory());
-    const refresh = () => setHistoryRecords(loadBacktestHistory());
+    let cancelled = false;
+    const refresh = async () => {
+      const records = await loadBacktestHistory();
+      if (!cancelled) setHistoryRecords(records);
+    };
+    refresh();
     window.addEventListener(BACKTEST_HISTORY_EVENT, refresh);
-    return () => window.removeEventListener(BACKTEST_HISTORY_EVENT, refresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(BACKTEST_HISTORY_EVENT, refresh);
+    };
   }, []);
 
   const loadHistoryRecord = useCallback((record: BacktestHistoryRecord) => {
@@ -375,10 +382,18 @@ export default function BacktestPage() {
         startDate: startDate || undefined,
         endDate: endDate || undefined,
       };
-      addBacktestHistoryRecord(params, {
-        ...(data as BacktestResult),
-        initialCapital: capital,
-      });
+      try {
+        await addBacktestHistoryRecord(params, {
+          ...(data as BacktestResult),
+          initialCapital: capital,
+        });
+      } catch (saveErr: unknown) {
+        setError(
+          saveErr instanceof Error
+            ? `回测完成，但保存历史失败：${saveErr.message}`
+            : "回测完成，但保存历史失败"
+        );
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "回测请求失败");
     } finally {
@@ -1060,9 +1075,9 @@ export default function BacktestPage() {
             {historyRecords.length > 0 && (
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   if (confirm("确定清空全部历史回测记录？")) {
-                    clearBacktestHistory();
+                    await clearBacktestHistory();
                     if (viewingHistory) {
                       setResult(null);
                       setViewingHistory(false);
@@ -1078,7 +1093,7 @@ export default function BacktestPage() {
           </div>
           {historyRecords.length === 0 ? (
             <p className="text-xs text-[#8b8fa3]">
-              运行回测后自动保存到浏览器 localStorage，可在此查看历史结果
+              运行回测后自动保存到本地 IndexedDB，可在此查看历史结果
             </p>
           ) : (
             <div className="overflow-x-auto max-h-[220px] overflow-y-auto">
@@ -1141,8 +1156,8 @@ export default function BacktestPage() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => {
-                              deleteBacktestHistoryRecord(record.id);
+                            onClick={async () => {
+                              await deleteBacktestHistoryRecord(record.id);
                               if (activeHistoryId === record.id) {
                                 setResult(null);
                                 setViewingHistory(false);

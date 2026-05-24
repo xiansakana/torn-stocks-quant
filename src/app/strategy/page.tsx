@@ -19,7 +19,7 @@ import {
   STRATEGY_APPLIED_EVENT,
   type AppliedStrategyMeta,
 } from "@/lib/strategy-storage";
-import { getLatestBacktestCapital } from "@/lib/backtest-history";
+import { getLatestBacktestCapital, BACKTEST_HISTORY_EVENT } from "@/lib/backtest-history";
 
 export default function StrategyPage() {
   const [signals, setSignals] = useState<StrategySignal[]>([]);
@@ -27,6 +27,7 @@ export default function StrategyPage() {
   const [config, setConfig] = useState<StrategyConfig>(DEFAULT_STRATEGY_CONFIG);
   const [showConfig, setShowConfig] = useState(false);
   const [appliedMeta, setAppliedMeta] = useState<AppliedStrategyMeta | null>(null);
+  const [backtestCapital, setBacktestCapital] = useState(100000);
 
   useEffect(() => {
     setAppliedMeta(loadAppliedStrategy());
@@ -37,6 +38,20 @@ export default function StrategyPage() {
     };
     window.addEventListener(STRATEGY_APPLIED_EVENT, onApplied);
     return () => window.removeEventListener(STRATEGY_APPLIED_EVENT, onApplied);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refreshCapital = async () => {
+      const capital = await getLatestBacktestCapital(100000);
+      if (!cancelled) setBacktestCapital(capital);
+    };
+    refreshCapital();
+    window.addEventListener(BACKTEST_HISTORY_EVENT, refreshCapital);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(BACKTEST_HISTORY_EVENT, refreshCapital);
+    };
   }, []);
 
   const fetchSignals = useCallback(async () => {
@@ -201,7 +216,7 @@ export default function StrategyPage() {
                   saveAppliedStrategy(
                     config,
                     "strategy",
-                    getLatestBacktestCapital(100000)
+                    backtestCapital
                   );
                   setAppliedMeta(loadAppliedStrategy());
                   fetchSignals();
