@@ -1,145 +1,114 @@
 // Backtesting Engine for Torn Stocks Quant
-import type { OHLCVCandle, StrategyConfig, BacktestResult, BacktestTrade, BacktestMetrics, SignalType } from "@/types/stock";
-import { computeIndicators } from "./technical-analysis";
+import type {
+  OHLCVCandle,
+  StrategyConfig,
+  BacktestResult,
+  BacktestTrade,
+  BacktestMetrics,
+  SignalType,
+} from "@/types/stock";
+import { computeIndicators, computeCombinedScore } from "./technical-analysis";
+
+/** Filter candles to a date range (inclusive). Dates are YYYY-MM-DD strings. */
+export function filterCandlesByDateRange(
+  candles: OHLCVCandle[],
+  startDate?: string,
+  endDate?: string
+): OHLCVCandle[] {
+  if (!startDate && !endDate) return candles;
+  const startTs = startDate ? new Date(`${startDate}T00:00:00`).getTime() : 0;
+  const endTs = endDate
+    ? new Date(`${endDate}T23:59:59.999`).getTime()
+    : Number.POSITIVE_INFINITY;
+  return candles.filter(
+    (c) => c.timestamp >= startTs && c.timestamp <= endTs
+  );
+}
+
+const WARMUP_BARS = 50;
 
 interface Position {
+  symbol?: string;
   entryPrice: number;
   entryDate: number;
   shares: number;
+  cost: number;
+  peakPrice: number;
 }
 
-export function runBacktest(
-  candles: OHLCVCandle[],
+function positionAlloc(
   config: StrategyConfig,
-  initialCapital: number = 100000
-): BacktestResult {
-  const indicators = computeIndicators(candles, config);
-  const trades: BacktestTrade[] = [];
-  const equityCurve: { timestamp: number; equity: number }[] = [];
-
-  let cash = initialCapital;
-  let position: Position | null = null;
-  let prevSignal: SignalType = "HOLD";
-
-  for (let i = 50; i < candles.length; i++) {
-    // Need warm-up period
-    const candle = candles[i];
-    const price = candle.close;
-    const rsiValue = indicators.rsi[i];
-    const macdLine = indicators.macd.macd[i];
-    const signalLine = indicators.macd.signal[i];
-    const prevMacd = indicators.macd.macd[i - 1];
-    const prevSignalLine = indicators.macd.signal[i - 1];
-    const bbUpper = indicators.bollingerBands.upper[i];
-    const bbLower = indicators.bollingerBands.lower[i];
-
-    if (isNaN(rsiValue) || isNaN(macdLine)) continue;
-
-    // Generate signal
-    let signal: SignalType = "HOLD";
-
-    const rsiSignal =
-      rsiValue <= config.rsiOversold ? "BUY" : rsiValue >= config.rsiOverbought ? "SELL" : "HOLD";
-
-    let macdSignal: SignalType = "HOLD";
-    if (!isNaN(prevMacd) && !isNaN(prevSignalLine)) {
-      if (prevMacd <= prevSignalLine && macdLine > signalLine) macdSignal = "BUY";
-      else if (prevMacd >= prevSignalLine && macdLine < signalLine) macdSignal = "SELL";
-    }
-
-    let bbSignal: SignalType = "HOLD";
-    if (!isNaN(bbUpper) && !isNaN(bbLower)) {
-      if (price <= bbLower) bbSignal = "BUY";
-      else if (price >= bbUpper) bbSignal = "SELL";
-    }
-
-    // Combined signal with minimum threshold
-    const rsiScore = rsiSignal === "BUY" ? 1 : rsiSignal === "SELL" ? -1 : 0;
-    const macdScore = macdSignal === "BUY" ? 1 : macdSignal === "SELL" ? -1 : 0;
-    const bbScore = bbSignal === "BUY" ? 1 : bbSignal === "SELL" ? -1 : 0;
-    const combined = rsiScore * 0.4 + macdScore * 0.35 + bbScore * 0.25;
-
-    if (combined > 0.2) signal = "BUY";
-    else if (combined < -0.2) signal = "SELL";
-
-    // Execute trades
-    if (signal === "BUY" && !position && prevSignal !== "BUY") {
-      // Buy with all cash
-      const shares = Math.floor(cash / price);
-      if (shares > 0) {
-        position = {
-          entryPrice: price,
-          entryDate: candle.timestamp,
-          shares,
-        };
-        cash -= shares * price;
-      }
-    } else if (signal === "SELL" && position && prevSignal !== "SELL") {
-      // Sell all shares
-      const grossProceeds = position.shares * price;
-      const fee = grossProceeds * config.sellFee;
-      const netProceeds = grossProceeds - fee;
-      const pnl = netProceeds - position.shares * position.entryPrice;
-      const pnlPercent = pnl / (position.shares * position.entryPrice);
-
-      trades.push({
-        entryDate: position.entryDate,
-        exitDate: candle.timestamp,
-        entryPrice: position.entryPrice,
-        exitPrice: price,
-        shares: position.shares,
-        pnl,
-        pnlPercent,
-        fee,
-        signal: "combined",
-      });
-
-      cash += netProceeds;
-      position = null;
-    }
-
-    prevSignal = signal;
-
-    // Track equity
-    const equity = cash + (position ? position.shares * price : 0);
-    equityCurve.push({ timestamp: candle.timestamp, equity });
+  initialCapital: number,
+  cash: number,
+  score: number
+): number {
+  let size = config.positionSize;
+  if (config.scaleByScore && score > config.minBuyScore) {
+    const strength = Math.min(
+      1,
+      (score - config.minBuyScore) / (1 - config.minBuyScore + 0.01)
+    );
+    size *= 0.7 + strength * 0.3;
   }
+  return Math.min(initialCapital * size, cash * 0.95);
+}
 
-  // Close any open position at end
-  if (position && candles.length > 0) {
-    const lastPrice = candles[candles.length - 1].close;
-    const grossProceeds = position.shares * lastPrice;
-    const fee = grossProceeds * config.sellFee;
-    const netProceeds = grossProceeds - fee;
-    const pnl = netProceeds - position.shares * position.entryPrice;
+function shouldExit(
+  config: StrategyConfig,
+  pos: Position,
+  price: number,
+  signal: SignalType
+): boolean {
+  if (price > pos.peakPrice) pos.peakPrice = price;
+  const pnlPct = (price - pos.entryPrice) / pos.entryPrice;
+  const drawdownFromPeak =
+    pos.peakPrice > 0 ? (pos.peakPrice - price) / pos.peakPrice : 0;
 
-    trades.push({
-      entryDate: position.entryDate,
-      exitDate: candles[candles.length - 1].timestamp,
-      entryPrice: position.entryPrice,
-      exitPrice: lastPrice,
-      shares: position.shares,
+  const signalExit = config.exitOnSellSignal && signal === "SELL";
+
+  return (
+    signalExit ||
+    pnlPct <= -config.stopLoss ||
+    pnlPct >= config.takeProfit ||
+    (config.trailingStop > 0 && drawdownFromPeak >= config.trailingStop)
+  );
+}
+
+function closePosition(
+  pos: Position,
+  exitPrice: number,
+  exitDate: number,
+  sellFee: number,
+  signal: string
+): { trade: BacktestTrade; proceeds: number } {
+  const grossProceeds = pos.shares * exitPrice;
+  const fee = grossProceeds * sellFee;
+  const netProceeds = grossProceeds - fee;
+  const pnl = netProceeds - pos.cost;
+
+  return {
+    trade: {
+      symbol: pos.symbol,
+      entryDate: pos.entryDate,
+      exitDate,
+      entryPrice: pos.entryPrice,
+      exitPrice,
+      shares: pos.shares,
       pnl,
-      pnlPercent: pnl / (position.shares * position.entryPrice),
+      pnlPercent: pos.cost > 0 ? pnl / pos.cost : 0,
       fee,
-      signal: "combined",
-    });
-
-    cash += netProceeds;
-    position = null;
-  }
-
-  const metrics = computeMetrics(trades, initialCapital, candles);
-
-  return { trades, metrics, equityCurve };
+      signal,
+    },
+    proceeds: netProceeds,
+  };
 }
 
 function computeMetrics(
   trades: BacktestTrade[],
   initialCapital: number,
-  candles: OHLCVCandle[]
+  equityCurve: { timestamp: number; equity: number }[]
 ): BacktestMetrics {
-  if (trades.length === 0) {
+  if (equityCurve.length === 0) {
     return {
       totalReturn: 0,
       totalReturnPercent: 0,
@@ -155,52 +124,58 @@ function computeMetrics(
     };
   }
 
-  const totalPnl = trades.reduce((sum, t) => sum + t.pnl, 0);
-  const totalReturnPercent = totalPnl / initialCapital;
+  const finalEquity = equityCurve[equityCurve.length - 1].equity;
+  const totalReturn = finalEquity - initialCapital;
+  const totalReturnPercent = totalReturn / initialCapital;
+
   const winningTrades = trades.filter((t) => t.pnl > 0);
   const losingTrades = trades.filter((t) => t.pnl < 0);
-  const winRate = winningTrades.length / trades.length;
+  const winRate = trades.length > 0 ? winningTrades.length / trades.length : 0;
 
   const grossProfit = winningTrades.reduce((sum, t) => sum + t.pnl, 0);
   const grossLoss = Math.abs(losingTrades.reduce((sum, t) => sum + t.pnl, 0));
-  const profitFactor = grossLoss === 0 ? Infinity : grossProfit / grossLoss;
+  const profitFactor = grossLoss === 0 ? (grossProfit > 0 ? Infinity : 0) : grossProfit / grossLoss;
 
-  const avgTradeReturn = trades.reduce((sum, t) => sum + t.pnlPercent, 0) / trades.length;
+  const avgTradeReturn =
+    trades.length > 0
+      ? trades.reduce((sum, t) => sum + t.pnlPercent, 0) / trades.length
+      : 0;
 
   const totalFees = trades.reduce((sum, t) => sum + t.fee, 0);
 
-  // Annualized return
-  const firstDate = candles[0].timestamp;
-  const lastDate = candles[candles.length - 1].timestamp;
-  const yearsDiff = (lastDate - firstDate) / (365.25 * 24 * 3600);
-  const annualizedReturn = yearsDiff > 0
-    ? Math.pow(1 + totalReturnPercent, 1 / yearsDiff) - 1
-    : 0;
+  const firstDate = equityCurve[0].timestamp;
+  const lastDate = equityCurve[equityCurve.length - 1].timestamp;
+  const msPerYear = 365.25 * 24 * 3600 * 1000;
+  const yearsDiff = (lastDate - firstDate) / msPerYear;
+  const annualizedReturn =
+    yearsDiff > 0 && finalEquity > 0
+      ? Math.pow(finalEquity / initialCapital, 1 / yearsDiff) - 1
+      : 0;
 
-  // Max drawdown
   let peak = initialCapital;
-  let equity = initialCapital;
   let maxDrawdown = 0;
   let maxDrawdownPercent = 0;
-
-  for (const trade of trades) {
-    equity += trade.pnl;
-    if (equity > peak) peak = equity;
-    const drawdown = peak - equity;
-    const drawdownPercent = drawdown / peak;
+  for (const point of equityCurve) {
+    if (point.equity > peak) peak = point.equity;
+    const drawdown = peak - point.equity;
+    const drawdownPercent = peak > 0 ? drawdown / peak : 0;
     if (drawdown > maxDrawdown) maxDrawdown = drawdown;
     if (drawdownPercent > maxDrawdownPercent) maxDrawdownPercent = drawdownPercent;
   }
 
-  // Sharpe ratio (simplified)
   const returns = trades.map((t) => t.pnlPercent);
-  const avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
+  const avgReturn =
+    returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
   const stdReturn =
-    Math.sqrt(returns.reduce((sum, r) => sum + (r - avgReturn) ** 2, 0) / returns.length);
+    returns.length > 0
+      ? Math.sqrt(
+          returns.reduce((sum, r) => sum + (r - avgReturn) ** 2, 0) / returns.length
+        )
+      : 0;
   const sharpeRatio = stdReturn === 0 ? 0 : avgReturn / stdReturn;
 
   return {
-    totalReturn: totalPnl,
+    totalReturn,
     totalReturnPercent,
     annualizedReturn,
     maxDrawdown,
@@ -212,4 +187,243 @@ function computeMetrics(
     sharpeRatio,
     totalFees,
   };
+}
+
+/** Single-stock backtest with partial position sizing and risk controls */
+export function runSingleStockBacktest(
+  candles: OHLCVCandle[],
+  config: StrategyConfig,
+  initialCapital: number = 100000,
+  symbol?: string
+): BacktestResult {
+  const indicators = computeIndicators(candles, config);
+  const trades: BacktestTrade[] = [];
+  const equityCurve: { timestamp: number; equity: number }[] = [];
+
+  let cash = initialCapital;
+  let position: Position | null = null;
+
+  for (let i = WARMUP_BARS; i < candles.length; i++) {
+    const candle = candles[i];
+    const price = candle.close;
+    const { score, signal } = computeCombinedScore(i, candles, indicators, config);
+
+    if (position && shouldExit(config, position, price, signal)) {
+      const { trade, proceeds } = closePosition(
+        position,
+        price,
+        candle.timestamp,
+        config.sellFee,
+        "exit"
+      );
+      trades.push(trade);
+      cash += proceeds;
+      position = null;
+    }
+
+    if (
+      signal === "BUY" &&
+      !position &&
+      score >= config.minBuyScore
+    ) {
+      const alloc = positionAlloc(config, initialCapital, cash, score);
+      const shares = Math.floor(alloc / price);
+      if (shares > 0) {
+        const cost = shares * price;
+        position = {
+          symbol,
+          entryPrice: price,
+          entryDate: candle.timestamp,
+          shares,
+          cost,
+          peakPrice: price,
+        };
+        cash -= cost;
+      }
+    }
+
+    equityCurve.push({
+      timestamp: candle.timestamp,
+      equity: cash + (position ? position.shares * price : 0),
+    });
+  }
+
+  if (position && candles.length > 0) {
+    const last = candles[candles.length - 1];
+    const { trade, proceeds } = closePosition(
+      position,
+      last.close,
+      last.timestamp,
+      config.sellFee,
+      "eod"
+    );
+    trades.push(trade);
+    cash += proceeds;
+  }
+
+  return {
+    mode: "single",
+    trades,
+    metrics: computeMetrics(trades, initialCapital, equityCurve),
+    equityCurve,
+  };
+}
+
+export interface StockCandleSeries {
+  symbol: string;
+  candles: OHLCVCandle[];
+}
+
+/** Multi-stock portfolio backtest — diversifies across top signals */
+export function runPortfolioBacktest(
+  stockSeries: StockCandleSeries[],
+  config: StrategyConfig,
+  initialCapital: number = 100000
+): BacktestResult {
+  const allTs = new Set<number>();
+  for (const { candles } of stockSeries) {
+    for (const c of candles) allTs.add(c.timestamp);
+  }
+  const timestamps = [...allTs].sort((a, b) => a - b);
+
+  const bySymbol: Record<
+    string,
+    {
+      map: Map<number, OHLCVCandle>;
+      candles: OHLCVCandle[];
+      indicators: ReturnType<typeof computeIndicators>;
+      tsIndex: Map<number, number>;
+    }
+  > = {};
+
+  for (const { symbol, candles } of stockSeries) {
+    bySymbol[symbol] = {
+      map: new Map(candles.map((c) => [c.timestamp, c])),
+      candles,
+      indicators: computeIndicators(candles, config),
+      tsIndex: new Map(candles.map((c, i) => [c.timestamp, i])),
+    };
+  }
+
+  let cash = initialCapital;
+  const positions: Record<string, Position> = {};
+  const trades: BacktestTrade[] = [];
+  const equityCurve: { timestamp: number; equity: number }[] = [];
+
+  for (const ts of timestamps) {
+    const candidates: {
+      symbol: string;
+      candle: OHLCVCandle;
+      score: number;
+      signal: SignalType;
+    }[] = [];
+
+    for (const { symbol } of stockSeries) {
+      const entry = bySymbol[symbol];
+      const candle = entry.map.get(ts);
+      if (!candle) continue;
+      const idx = entry.tsIndex.get(ts);
+      if (idx == null || idx < WARMUP_BARS) continue;
+      const { score, signal } = computeCombinedScore(
+        idx,
+        entry.candles,
+        entry.indicators,
+        config
+      );
+      candidates.push({ symbol, candle, score, signal });
+    }
+
+    for (const sym of Object.keys(positions)) {
+      const pos = positions[sym];
+      const candle = bySymbol[sym].map.get(ts);
+      if (!candle) continue;
+      const idx = bySymbol[sym].tsIndex.get(ts)!;
+      const { signal } = computeCombinedScore(
+        idx,
+        bySymbol[sym].candles,
+        bySymbol[sym].indicators,
+        config
+      );
+
+      if (shouldExit(config, pos, candle.close, signal)) {
+        const { trade, proceeds } = closePosition(
+          pos,
+          candle.close,
+          ts,
+          config.sellFee,
+          "exit"
+        );
+        trades.push(trade);
+        cash += proceeds;
+        delete positions[sym];
+      }
+    }
+
+    const held = Object.keys(positions).length;
+    const slots = config.maxPositions - held;
+    if (slots > 0) {
+      const buys = candidates
+        .filter(
+          (c) =>
+            c.signal === "BUY" &&
+            c.score >= config.minBuyScore &&
+            !positions[c.symbol]
+        )
+        .sort((a, b) => b.score - a.score)
+        .slice(0, slots);
+
+      for (const b of buys) {
+        const alloc = positionAlloc(config, initialCapital, cash, b.score);
+        const shares = Math.floor(alloc / b.candle.close);
+        if (shares <= 0) continue;
+        const cost = shares * b.candle.close;
+        positions[b.symbol] = {
+          symbol: b.symbol,
+          entryPrice: b.candle.close,
+          entryDate: ts,
+          shares,
+          cost,
+          peakPrice: b.candle.close,
+        };
+        cash -= cost;
+      }
+    }
+
+    let equity = cash;
+    for (const sym of Object.keys(positions)) {
+      const candle = bySymbol[sym].map.get(ts);
+      if (candle) equity += positions[sym].shares * candle.close;
+    }
+    equityCurve.push({ timestamp: ts, equity });
+  }
+
+  for (const sym of Object.keys(positions)) {
+    const pos = positions[sym];
+    const last = bySymbol[sym].candles.at(-1)!;
+    const { trade, proceeds } = closePosition(
+      pos,
+      last.close,
+      last.timestamp,
+      config.sellFee,
+      "eod"
+    );
+    trades.push(trade);
+    cash += proceeds;
+  }
+
+  return {
+    mode: "portfolio",
+    trades,
+    metrics: computeMetrics(trades, initialCapital, equityCurve),
+    equityCurve,
+  };
+}
+
+/** @deprecated Use runSingleStockBacktest — kept for compatibility */
+export function runBacktest(
+  candles: OHLCVCandle[],
+  config: StrategyConfig,
+  initialCapital: number = 100000
+): BacktestResult {
+  return runSingleStockBacktest(candles, config, initialCapital);
 }

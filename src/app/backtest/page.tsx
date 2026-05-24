@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { StrategyConfig, BacktestResult, Interval } from "@/types/stock";
-import { DEFAULT_STRATEGY_CONFIG, TRACKED_SYMBOLS, INTERVAL_LABELS } from "@/types/stock";
+import { DEFAULT_STRATEGY_CONFIG, TRACKED_SYMBOLS, ALL_INTERVALS, INTERVAL_LABELS } from "@/types/stock";
 import { AppShell } from "@/components/app-shell";
 import {
   createChart,
@@ -25,12 +25,13 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const BACKTEST_INTERVALS: Interval[] = ["d1", "w1", "n1", "y1"];
-
 export default function BacktestPage() {
+  const [mode, setMode] = useState<"single" | "portfolio">("portfolio");
   const [symbol, setSymbol] = useState("TCI");
   const [interval, setInterval] = useState<Interval>("d1");
   const [capital, setCapital] = useState(100000);
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
   const [config, setConfig] = useState<StrategyConfig>(DEFAULT_STRATEGY_CONFIG);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -51,6 +52,9 @@ export default function BacktestPage() {
           interval,
           capital,
           config,
+          mode,
+          startDate: startDate || undefined,
+          endDate: endDate || undefined,
         }),
       });
       const data = await res.json();
@@ -64,7 +68,7 @@ export default function BacktestPage() {
     } finally {
       setLoading(false);
     }
-  }, [symbol, interval, capital, config]);
+  }, [symbol, interval, capital, config, mode, startDate, endDate]);
 
   // Render equity curve
   useEffect(() => {
@@ -88,6 +92,10 @@ export default function BacktestPage() {
         horzLines: { color: "#2a2d3a40" },
       },
       rightPriceScale: {
+        visible: false,
+      },
+      leftPriceScale: {
+        visible: true,
         borderColor: "#2a2d3a",
       },
       timeScale: {
@@ -102,20 +110,26 @@ export default function BacktestPage() {
     const equitySeries = chart.addSeries(LineSeries, {
       color: "#3b82f6",
       lineWidth: 2,
+      priceScaleId: "left",
+      priceFormat: {
+        type: "custom",
+        formatter: (price: number) =>
+          `${price >= 0 ? "+" : ""}${price.toFixed(1)}%`,
+      },
     });
 
     const equityData: LineData<Time>[] = result.equityCurve.map((point) => ({
       time: (point.timestamp / 1000) as Time,
-      value: point.equity,
+      value: ((point.equity / capital) - 1) * 100,
     }));
 
     equitySeries.setData(equityData);
 
-    // Add initial capital line
     const baselineSeries = chart.addSeries(LineSeries, {
       color: "#8b8fa340",
       lineWidth: 1,
       lineStyle: 2,
+      priceScaleId: "left",
       priceLineVisible: false,
       lastValueVisible: false,
     });
@@ -123,7 +137,7 @@ export default function BacktestPage() {
     baselineSeries.setData(
       result.equityCurve.map((point) => ({
         time: (point.timestamp / 1000) as Time,
-        value: capital,
+        value: 0,
       }))
     );
 
@@ -151,21 +165,35 @@ export default function BacktestPage() {
           <div>
             <h1 className="text-2xl font-bold text-[#e1e4ea]">历史回测</h1>
             <p className="text-sm text-[#8b8fa3] mt-1">
-              基于历史数据验证策略表现
+              组合回测 — 最多 {config.maxPositions} 只持仓，单仓 {Math.round(config.positionSize * 100)}%
             </p>
           </div>
         </div>
 
         {/* Config */}
         <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-4 mb-6">
-          <div className="grid grid-cols-6 gap-4">
+          <div className="grid grid-cols-6 gap-4 mb-4">
+            {/* Mode */}
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">回测模式</label>
+              <select
+                value={mode}
+                onChange={(e) => setMode(e.target.value as "single" | "portfolio")}
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              >
+                <option value="portfolio">组合 (推荐)</option>
+                <option value="single">单股</option>
+              </select>
+            </div>
+
             {/* Symbol */}
             <div>
               <label className="text-xs text-[#8b8fa3] mb-1 block">标的</label>
               <select
                 value={symbol}
                 onChange={(e) => setSymbol(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+                disabled={mode === "portfolio"}
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none disabled:opacity-50"
               >
                 {TRACKED_SYMBOLS.map((s) => (
                   <option key={s} value={s}>
@@ -183,7 +211,7 @@ export default function BacktestPage() {
                 onChange={(e) => setInterval(e.target.value as Interval)}
                 className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
               >
-                {BACKTEST_INTERVALS.map((iv) => (
+                {ALL_INTERVALS.map((iv) => (
                   <option key={iv} value={iv}>
                     {INTERVAL_LABELS[iv]}
                   </option>
@@ -202,6 +230,34 @@ export default function BacktestPage() {
               />
             </div>
 
+            {/* Start Date */}
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">开始日期</label>
+              <input
+                type="date"
+                value={startDate}
+                max={endDate || undefined}
+                onChange={(e) => setStartDate(e.target.value)}
+                placeholder="全部历史"
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+
+            {/* End Date */}
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">结束日期</label>
+              <input
+                type="date"
+                value={endDate}
+                min={startDate || undefined}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+              <p className="text-[10px] text-[#8b8fa3] mt-1">留空表示不限</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-6 gap-4 mb-4">
             {/* RSI Period */}
             <div>
               <label className="text-xs text-[#8b8fa3] mb-1 block">RSI 周期</label>
@@ -248,6 +304,94 @@ export default function BacktestPage() {
             </div>
           </div>
 
+          <div className="grid grid-cols-6 gap-4">
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">单仓比例 (%)</label>
+              <input
+                type="number"
+                value={Math.round(config.positionSize * 100)}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    positionSize: (parseInt(e.target.value) || 40) / 100,
+                  })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">最大持仓数</label>
+              <input
+                type="number"
+                value={config.maxPositions}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    maxPositions: parseInt(e.target.value) || 4,
+                  })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">止损 (%)</label>
+              <input
+                type="number"
+                value={Math.round(config.stopLoss * 100)}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    stopLoss: (parseInt(e.target.value) || 8) / 100,
+                  })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">止盈 (%)</label>
+              <input
+                type="number"
+                value={Math.round(config.takeProfit * 100)}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    takeProfit: (parseInt(e.target.value) || 45) / 100,
+                  })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">移动止损 (%)</label>
+              <input
+                type="number"
+                value={Math.round(config.trailingStop * 100)}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    trailingStop: (parseInt(e.target.value) || 12) / 100,
+                  })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">最低买入分</label>
+              <input
+                type="number"
+                step={0.01}
+                value={config.minBuyScore}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    minBuyScore: parseFloat(e.target.value) || 0.38,
+                  })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+          </div>
+
           <div className="mt-4 flex gap-2">
             <button
               onClick={runBacktest}
@@ -269,9 +413,12 @@ export default function BacktestPage() {
             <button
               onClick={() => {
                 setConfig(DEFAULT_STRATEGY_CONFIG);
+                setMode("portfolio");
                 setSymbol("TCI");
                 setInterval("d1");
                 setCapital(100000);
+                setStartDate("");
+                setEndDate("");
               }}
               className="px-4 py-2 rounded-lg bg-[#2a2d3a] text-[#8b8fa3] hover:text-[#e1e4ea] text-sm transition-colors"
             >
@@ -292,7 +439,13 @@ export default function BacktestPage() {
         {result && (
           <>
             {/* Metrics */}
-            <div className="grid grid-cols-5 gap-4 mb-6">
+            <div className="grid grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+              <MetricCard
+                label="年化收益"
+                value={`${result.metrics.annualizedReturn >= 0 ? "+" : ""}${(result.metrics.annualizedReturn * 100).toFixed(1)}%`}
+                icon={<TrendingUp className="h-5 w-5" />}
+                positive={result.metrics.annualizedReturn >= 0.3}
+              />
               <MetricCard
                 label="总收益"
                 value={`${result.metrics.totalReturnPercent >= 0 ? "+" : ""}${(result.metrics.totalReturnPercent * 100).toFixed(2)}%`}
@@ -331,8 +484,21 @@ export default function BacktestPage() {
             {/* Additional Metrics */}
             <div className="grid grid-cols-4 gap-4 mb-6">
               <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-3">
-                <span className="text-xs text-[#8b8fa3]">年化收益</span>
+                <span className="text-xs text-[#8b8fa3]">回测模式</span>
                 <div className="font-data text-lg font-bold text-[#e1e4ea] mt-1">
+                  {result.mode === "portfolio" ? "组合" : "单股"}
+                </div>
+              </div>
+              <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-3">
+                <span className="text-xs text-[#8b8fa3]">年化收益</span>
+                <div
+                  className={cn(
+                    "font-data text-lg font-bold mt-1",
+                    result.metrics.annualizedReturn >= 0.3
+                      ? "text-[#22c55e]"
+                      : "text-[#e1e4ea]"
+                  )}
+                >
                   {(result.metrics.annualizedReturn * 100).toFixed(2)}%
                 </div>
               </div>
@@ -358,9 +524,16 @@ export default function BacktestPage() {
 
             {/* Equity Curve */}
             <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-4 mb-6">
-              <h3 className="text-sm font-semibold text-[#e1e4ea] mb-3">
-                权益曲线
-              </h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-[#e1e4ea]">
+                  权益曲线（累计收益率）
+                </h3>
+                {(result.startDate || result.endDate) && (
+                  <span className="text-xs text-[#8b8fa3] font-data">
+                    {result.startDate ?? "—"} ~ {result.endDate ?? "—"}
+                  </span>
+                )}
+              </div>
               <div ref={chartContainerRef} className="w-full h-[300px]" />
             </div>
 
@@ -379,6 +552,9 @@ export default function BacktestPage() {
                   <thead className="sticky top-0 bg-[#1a1d29]">
                     <tr className="border-b border-[#2a2d3a] text-[#8b8fa3]">
                       <th className="text-left px-4 py-2 font-medium">#</th>
+                      {result.mode === "portfolio" && (
+                        <th className="text-left px-4 py-2 font-medium">标的</th>
+                      )}
                       <th className="text-left px-4 py-2 font-medium">
                         买入日期
                       </th>
@@ -401,17 +577,34 @@ export default function BacktestPage() {
                         盈亏
                       </th>
                       <th className="text-right px-4 py-2 font-medium">
-                        收益率
+                        单笔收益率
+                      </th>
+                      <th className="text-right px-4 py-2 font-medium">
+                        累计收益率
                       </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {result.trades.map((trade, i) => (
+                    {(() => {
+                      let runningEquity = capital;
+                      const sortedTrades = [...result.trades].sort(
+                        (a, b) => a.exitDate - b.exitDate
+                      );
+                      return sortedTrades.map((trade, i) => {
+                        runningEquity += trade.pnl;
+                        const cumulativeReturn =
+                          (runningEquity - capital) / capital;
+                        return (
                       <tr
                         key={i}
                         className="border-b border-[#2a2d3a]/50 hover:bg-[#2a2d3a]/30 transition-colors"
                       >
                         <td className="px-4 py-2 text-[#8b8fa3]">{i + 1}</td>
+                        {result.mode === "portfolio" && (
+                          <td className="px-4 py-2 font-data text-[#3b82f6]">
+                            {trade.symbol ?? "-"}
+                          </td>
+                        )}
                         <td className="px-4 py-2 font-data text-[#e1e4ea]">
                           {new Date(trade.entryDate).toLocaleDateString("zh-CN")}
                         </td>
@@ -452,8 +645,21 @@ export default function BacktestPage() {
                           {trade.pnlPercent >= 0 ? "+" : ""}
                           {(trade.pnlPercent * 100).toFixed(2)}%
                         </td>
+                        <td
+                          className={cn(
+                            "px-4 py-2 text-right font-data font-medium",
+                            cumulativeReturn >= 0
+                              ? "text-[#22c55e]"
+                              : "text-[#ef4444]"
+                          )}
+                        >
+                          {cumulativeReturn >= 0 ? "+" : ""}
+                          {(cumulativeReturn * 100).toFixed(2)}%
+                        </td>
                       </tr>
-                    ))}
+                        );
+                      });
+                    })()}
                   </tbody>
                 </table>
               </div>
@@ -469,7 +675,7 @@ export default function BacktestPage() {
               选择参数并运行回测
             </h3>
             <p className="text-sm text-[#8b8fa3]">
-              配置标的、周期和策略参数，然后点击"运行回测"查看策略历史表现
+              默认使用组合模式：分散持仓、止损止盈、按信号强度分配仓位
             </p>
           </div>
         )}

@@ -52,7 +52,7 @@ export default function StrategyPage() {
               策略信号
             </h1>
             <p className="text-sm text-[#8b8fa3] mt-1">
-              多因子量化策略 - RSI + MACD + 布林带
+              组合量化策略 — 分散持仓 · 止损止盈 · RSI + MACD + 布林带
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -134,6 +134,34 @@ export default function StrategyPage() {
                   setConfig({ ...config, bollingerStdDev: v })
                 }
                 step={0.5}
+              />
+              <ParamInput
+                label="单仓比例 (%)"
+                value={Math.round(config.positionSize * 100)}
+                onChange={(v) =>
+                  setConfig({ ...config, positionSize: v / 100 })
+                }
+              />
+              <ParamInput
+                label="最大持仓"
+                value={config.maxPositions}
+                onChange={(v) =>
+                  setConfig({ ...config, maxPositions: v })
+                }
+              />
+              <ParamInput
+                label="止损 (%)"
+                value={Math.round(config.stopLoss * 100)}
+                onChange={(v) =>
+                  setConfig({ ...config, stopLoss: v / 100 })
+                }
+              />
+              <ParamInput
+                label="止盈 (%)"
+                value={Math.round(config.takeProfit * 100)}
+                onChange={(v) =>
+                  setConfig({ ...config, takeProfit: v / 100 })
+                }
               />
             </div>
             <div className="mt-4 flex gap-2">

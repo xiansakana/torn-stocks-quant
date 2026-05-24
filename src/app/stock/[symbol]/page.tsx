@@ -87,6 +87,7 @@ export default function StockDetailPage() {
   // Fetch historical data
   const fetchHistorical = useCallback(async () => {
     setLoading(true);
+    setIndicators(null);
     try {
       const url =
         interval === "m1"
@@ -291,7 +292,7 @@ export default function StockDetailPage() {
     volumeSeries.setData(volumeData);
 
     // Bollinger Bands overlay
-    if (indicators) {
+    if (indicators && indicators.bb.upper.length === candles.length) {
       const bbUpperSeries = chart.addSeries(LineSeries, {
         color: "#3b82f660",
         lineWidth: 1,
@@ -314,11 +315,11 @@ export default function StockDetailPage() {
 
       const toBBData = (arr: number[]) =>
         arr
-          .map((v, i) =>
-            !isNaN(v)
-              ? { time: (candles[i].timestamp / 1000) as Time, value: v }
-              : null
-          )
+          .map((v, i) => {
+            const candle = candles[i];
+            if (isNaN(v) || !candle) return null;
+            return { time: (candle.timestamp / 1000) as Time, value: v };
+          })
           .filter(Boolean) as { time: Time; value: number }[];
 
       bbUpperSeries.setData(toBBData(indicators.bb.upper));
