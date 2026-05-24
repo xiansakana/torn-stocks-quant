@@ -1,0 +1,511 @@
+"use client";
+
+import { useEffect, useRef, useState, useCallback } from "react";
+import type { StrategyConfig, BacktestResult, Interval } from "@/types/stock";
+import { DEFAULT_STRATEGY_CONFIG, TRACKED_SYMBOLS, INTERVAL_LABELS } from "@/types/stock";
+import { AppShell } from "@/components/app-shell";
+import {
+  createChart,
+  type IChartApi,
+  ColorType,
+  LineSeries,
+  type LineData,
+  type Time,
+} from "lightweight-charts";
+import {
+  FlaskConical,
+  Play,
+  Loader2,
+  TrendingUp,
+  TrendingDown,
+  AlertTriangle,
+  DollarSign,
+  BarChart3,
+  Target,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+
+const BACKTEST_INTERVALS: Interval[] = ["d1", "w1", "n1", "y1"];
+
+export default function BacktestPage() {
+  const [symbol, setSymbol] = useState("TCI");
+  const [interval, setInterval] = useState<Interval>("d1");
+  const [capital, setCapital] = useState(100000);
+  const [config, setConfig] = useState<StrategyConfig>(DEFAULT_STRATEGY_CONFIG);
+  const [result, setResult] = useState<BacktestResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+
+  const runBacktest = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/backtest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol,
+          interval,
+          capital,
+          config,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "回测失败");
+        return;
+      }
+      setResult(data as BacktestResult);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "回测请求失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [symbol, interval, capital, config]);
+
+  // Render equity curve
+  useEffect(() => {
+    if (!chartContainerRef.current || !result || result.equityCurve.length === 0) return;
+
+    if (chartRef.current) {
+      chartRef.current.remove();
+      chartRef.current = null;
+    }
+
+    const container = chartContainerRef.current;
+    const chart = createChart(container, {
+      layout: {
+        background: { type: ColorType.Solid, color: "#1a1d29" },
+        textColor: "#8b8fa3",
+        fontFamily: "'JetBrains Mono', monospace",
+        fontSize: 11,
+      },
+      grid: {
+        vertLines: { color: "#2a2d3a40" },
+        horzLines: { color: "#2a2d3a40" },
+      },
+      rightPriceScale: {
+        borderColor: "#2a2d3a",
+      },
+      timeScale: {
+        borderColor: "#2a2d3a",
+      },
+      width: container.clientWidth,
+      height: 300,
+    });
+
+    chartRef.current = chart;
+
+    const equitySeries = chart.addSeries(LineSeries, {
+      color: "#3b82f6",
+      lineWidth: 2,
+    });
+
+    const equityData: LineData<Time>[] = result.equityCurve.map((point) => ({
+      time: (point.timestamp / 1000) as Time,
+      value: point.equity,
+    }));
+
+    equitySeries.setData(equityData);
+
+    // Add initial capital line
+    const baselineSeries = chart.addSeries(LineSeries, {
+      color: "#8b8fa340",
+      lineWidth: 1,
+      lineStyle: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
+    baselineSeries.setData(
+      result.equityCurve.map((point) => ({
+        time: (point.timestamp / 1000) as Time,
+        value: capital,
+      }))
+    );
+
+    chart.timeScale().fitContent();
+
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        chart.applyOptions({ width: entry.contentRect.width });
+      }
+    });
+    ro.observe(container);
+
+    return () => {
+      ro.disconnect();
+      chart.remove();
+      chartRef.current = null;
+    };
+  }, [result, capital]);
+
+  return (
+    <AppShell>
+      <div className="p-6 max-w-[1600px] mx-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h1 className="text-2xl font-bold text-[#e1e4ea]">历史回测</h1>
+            <p className="text-sm text-[#8b8fa3] mt-1">
+              基于历史数据验证策略表现
+            </p>
+          </div>
+        </div>
+
+        {/* Config */}
+        <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-4 mb-6">
+          <div className="grid grid-cols-6 gap-4">
+            {/* Symbol */}
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">标的</label>
+              <select
+                value={symbol}
+                onChange={(e) => setSymbol(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              >
+                {TRACKED_SYMBOLS.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Interval */}
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">K线周期</label>
+              <select
+                value={interval}
+                onChange={(e) => setInterval(e.target.value as Interval)}
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              >
+                {BACKTEST_INTERVALS.map((iv) => (
+                  <option key={iv} value={iv}>
+                    {INTERVAL_LABELS[iv]}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Capital */}
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">初始资金</label>
+              <input
+                type="number"
+                value={capital}
+                onChange={(e) => setCapital(parseInt(e.target.value) || 100000)}
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+
+            {/* RSI Period */}
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">RSI 周期</label>
+              <input
+                type="number"
+                value={config.rsiPeriod}
+                onChange={(e) =>
+                  setConfig({ ...config, rsiPeriod: parseInt(e.target.value) || 14 })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+
+            {/* RSI Overbought */}
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">RSI 超买</label>
+              <input
+                type="number"
+                value={config.rsiOverbought}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    rsiOverbought: parseInt(e.target.value) || 70,
+                  })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+
+            {/* RSI Oversold */}
+            <div>
+              <label className="text-xs text-[#8b8fa3] mb-1 block">RSI 超卖</label>
+              <input
+                type="number"
+                value={config.rsiOversold}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    rsiOversold: parseInt(e.target.value) || 30,
+                  })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-[#0f1117] border border-[#2a2d3a] text-[#e1e4ea] font-data text-sm focus:border-[#3b82f6] focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <div className="mt-4 flex gap-2">
+            <button
+              onClick={runBacktest}
+              disabled={loading}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all",
+                loading
+                  ? "bg-[#3b82f6]/50 text-white/50 cursor-not-allowed"
+                  : "bg-[#3b82f6] text-white hover:bg-[#3b82f6]/80"
+              )}
+            >
+              {loading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
+              {loading ? "运行中..." : "运行回测"}
+            </button>
+            <button
+              onClick={() => {
+                setConfig(DEFAULT_STRATEGY_CONFIG);
+                setSymbol("TCI");
+                setInterval("d1");
+                setCapital(100000);
+              }}
+              className="px-4 py-2 rounded-lg bg-[#2a2d3a] text-[#8b8fa3] hover:text-[#e1e4ea] text-sm transition-colors"
+            >
+              重置参数
+            </button>
+          </div>
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="bg-[#ef4444]/10 border border-[#ef4444]/20 rounded-lg p-4 mb-6 flex items-center gap-2 text-[#ef4444] text-sm">
+            <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+            {error}
+          </div>
+        )}
+
+        {/* Results */}
+        {result && (
+          <>
+            {/* Metrics */}
+            <div className="grid grid-cols-5 gap-4 mb-6">
+              <MetricCard
+                label="总收益"
+                value={`${result.metrics.totalReturnPercent >= 0 ? "+" : ""}${(result.metrics.totalReturnPercent * 100).toFixed(2)}%`}
+                icon={<DollarSign className="h-5 w-5" />}
+                positive={result.metrics.totalReturnPercent >= 0}
+              />
+              <MetricCard
+                label="交易次数"
+                value={result.metrics.totalTrades.toString()}
+                icon={<BarChart3 className="h-5 w-5" />}
+              />
+              <MetricCard
+                label="胜率"
+                value={`${(result.metrics.winRate * 100).toFixed(1)}%`}
+                icon={<Target className="h-5 w-5" />}
+                positive={result.metrics.winRate >= 0.5}
+              />
+              <MetricCard
+                label="最大回撤"
+                value={`${(result.metrics.maxDrawdownPercent * 100).toFixed(2)}%`}
+                icon={<TrendingDown className="h-5 w-5" />}
+                negative
+              />
+              <MetricCard
+                label="盈亏比"
+                value={
+                  result.metrics.profitFactor === Infinity
+                    ? "∞"
+                    : result.metrics.profitFactor.toFixed(2)
+                }
+                icon={<TrendingUp className="h-5 w-5" />}
+                positive={result.metrics.profitFactor >= 1}
+              />
+            </div>
+
+            {/* Additional Metrics */}
+            <div className="grid grid-cols-4 gap-4 mb-6">
+              <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-3">
+                <span className="text-xs text-[#8b8fa3]">年化收益</span>
+                <div className="font-data text-lg font-bold text-[#e1e4ea] mt-1">
+                  {(result.metrics.annualizedReturn * 100).toFixed(2)}%
+                </div>
+              </div>
+              <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-3">
+                <span className="text-xs text-[#8b8fa3]">平均交易收益</span>
+                <div className="font-data text-lg font-bold text-[#e1e4ea] mt-1">
+                  {(result.metrics.avgTradeReturn * 100).toFixed(3)}%
+                </div>
+              </div>
+              <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-3">
+                <span className="text-xs text-[#8b8fa3]">夏普比率</span>
+                <div className="font-data text-lg font-bold text-[#e1e4ea] mt-1">
+                  {result.metrics.sharpeRatio.toFixed(2)}
+                </div>
+              </div>
+              <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-3">
+                <span className="text-xs text-[#8b8fa3]">总手续费</span>
+                <div className="font-data text-lg font-bold text-[#f59e0b] mt-1">
+                  {result.metrics.totalFees.toFixed(2)}
+                </div>
+              </div>
+            </div>
+
+            {/* Equity Curve */}
+            <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-4 mb-6">
+              <h3 className="text-sm font-semibold text-[#e1e4ea] mb-3">
+                权益曲线
+              </h3>
+              <div ref={chartContainerRef} className="w-full h-[300px]" />
+            </div>
+
+            {/* Trade List */}
+            <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a]">
+              <div className="px-4 py-3 border-b border-[#2a2d3a] flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-[#e1e4ea]">
+                  交易记录
+                </h3>
+                <span className="text-xs text-[#8b8fa3]">
+                  共 {result.trades.length} 笔交易
+                </span>
+              </div>
+              <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-[#1a1d29]">
+                    <tr className="border-b border-[#2a2d3a] text-[#8b8fa3]">
+                      <th className="text-left px-4 py-2 font-medium">#</th>
+                      <th className="text-left px-4 py-2 font-medium">
+                        买入日期
+                      </th>
+                      <th className="text-left px-4 py-2 font-medium">
+                        卖出日期
+                      </th>
+                      <th className="text-right px-4 py-2 font-medium">
+                        买入价
+                      </th>
+                      <th className="text-right px-4 py-2 font-medium">
+                        卖出价
+                      </th>
+                      <th className="text-right px-4 py-2 font-medium">
+                        数量
+                      </th>
+                      <th className="text-right px-4 py-2 font-medium">
+                        手续费
+                      </th>
+                      <th className="text-right px-4 py-2 font-medium">
+                        盈亏
+                      </th>
+                      <th className="text-right px-4 py-2 font-medium">
+                        收益率
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.trades.map((trade, i) => (
+                      <tr
+                        key={i}
+                        className="border-b border-[#2a2d3a]/50 hover:bg-[#2a2d3a]/30 transition-colors"
+                      >
+                        <td className="px-4 py-2 text-[#8b8fa3]">{i + 1}</td>
+                        <td className="px-4 py-2 font-data text-[#e1e4ea]">
+                          {new Date(trade.entryDate).toLocaleDateString("zh-CN")}
+                        </td>
+                        <td className="px-4 py-2 font-data text-[#e1e4ea]">
+                          {new Date(trade.exitDate).toLocaleDateString("zh-CN")}
+                        </td>
+                        <td className="px-4 py-2 text-right font-data text-[#e1e4ea]">
+                          {trade.entryPrice.toFixed(2)}
+                        </td>
+                        <td className="px-4 py-2 text-right font-data text-[#e1e4ea]">
+                          {trade.exitPrice.toFixed(2)}
+                        </td>
+                        <td className="px-4 py-2 text-right font-data text-[#8b8fa3]">
+                          {trade.shares.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-2 text-right font-data text-[#f59e0b]">
+                          {trade.fee.toFixed(2)}
+                        </td>
+                        <td
+                          className={cn(
+                            "px-4 py-2 text-right font-data",
+                            trade.pnl >= 0
+                              ? "text-[#22c55e]"
+                              : "text-[#ef4444]"
+                          )}
+                        >
+                          {trade.pnl >= 0 ? "+" : ""}
+                          {trade.pnl.toFixed(2)}
+                        </td>
+                        <td
+                          className={cn(
+                            "px-4 py-2 text-right font-data",
+                            trade.pnlPercent >= 0
+                              ? "text-[#22c55e]"
+                              : "text-[#ef4444]"
+                          )}
+                        >
+                          {trade.pnlPercent >= 0 ? "+" : ""}
+                          {(trade.pnlPercent * 100).toFixed(2)}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Empty State */}
+        {!result && !loading && !error && (
+          <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-16 text-center">
+            <FlaskConical className="h-12 w-12 text-[#8b8fa3] mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-[#e1e4ea] mb-2">
+              选择参数并运行回测
+            </h3>
+            <p className="text-sm text-[#8b8fa3]">
+              配置标的、周期和策略参数，然后点击"运行回测"查看策略历史表现
+            </p>
+          </div>
+        )}
+      </div>
+    </AppShell>
+  );
+}
+
+function MetricCard({
+  label,
+  value,
+  icon,
+  positive,
+  negative,
+}: {
+  label: string;
+  value: string;
+  icon: React.ReactNode;
+  positive?: boolean;
+  negative?: boolean;
+}) {
+  const color = positive
+    ? "#22c55e"
+    : negative
+      ? "#ef4444"
+      : "#e1e4ea";
+
+  return (
+    <div className="bg-[#1a1d29] rounded-lg border border-[#2a2d3a] p-4">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-[#8b8fa3]">{label}</span>
+        <div style={{ color }}>{icon}</div>
+      </div>
+      <span className="font-data text-2xl font-bold" style={{ color }}>
+        {value}
+      </span>
+    </div>
+  );
+}
