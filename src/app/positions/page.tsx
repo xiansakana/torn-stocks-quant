@@ -40,13 +40,15 @@ export default function PositionsPage() {
       setPortfolio(null);
       return;
     }
+    const capital = applied.capital ?? live.initialCapital;
     setHasAppliedStrategy(true);
     setConfig(applied.config);
-    setCapital(applied.capital ?? live.initialCapital);
+    setCapital(capital);
     setAppliedAt(applied.appliedAt);
-    setPortfolio(
-      toCurrentPortfolioState(live, [])
-    );
+    setPortfolio({
+      ...toCurrentPortfolioState(live, []),
+      initialCapital: capital,
+    });
   }, []);
 
   const syncPositions = useCallback(async () => {
@@ -58,10 +60,11 @@ export default function PositionsPage() {
       return;
     }
 
+    const capital = applied.capital ?? live.initialCapital;
     setSyncing(true);
     setError(null);
     setConfig(applied.config);
-    setCapital(applied.capital ?? live.initialCapital);
+    setCapital(capital);
     setHasAppliedStrategy(true);
     setAppliedAt(applied.appliedAt);
 
@@ -81,7 +84,10 @@ export default function PositionsPage() {
         return;
       }
       saveLivePortfolio(data.portfolio);
-      setPortfolio(data.display as CurrentPortfolioState);
+      setPortfolio({
+        ...(data.display as CurrentPortfolioState),
+        initialCapital: capital,
+      });
     } catch {
       setError("同步请求失败");
       displayFromStorage();
