@@ -226,6 +226,8 @@ export interface StrategyConfig {
   trailingStop: number;
   /** Scale position size by signal strength */
   scaleByScore: boolean;
+  /** Selected symbols for portfolio mode (omit = all tracked) */
+  selectedSymbols?: string[];
 }
 
 /** D1 defaults — TP/SL/trailing tuned on market-d1.xlsx (see walk-forward-d1.json) */

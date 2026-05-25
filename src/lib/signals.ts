@@ -50,8 +50,13 @@ export async function fetchAllSignals(
     stockMap.set(stock.stock, stock);
   }
 
+  // Use selectedSymbols if provided, otherwise use all TRACKED_SYMBOLS
+  const targetSymbols = config.selectedSymbols?.length
+    ? config.selectedSymbols
+    : TRACKED_SYMBOLS;
+
   const signals = await Promise.all(
-    TRACKED_SYMBOLS.map(async (symbol) => {
+    targetSymbols.map(async (symbol) => {
       try {
         const histRes = await fetch(
           `${TORNSY_API_BASE}/${symbol.toLowerCase()}?interval=d1`,

@@ -402,11 +402,14 @@ export default function BacktestPage() {
   }, [applyAlertFields]);
 
   const applyStrategy = useCallback(() => {
-    const meta = saveAppliedStrategy(config, "backtest", capital);
+    const configToSave: StrategyConfig = mode === "portfolio" && portfolioSymbols.length < TRACKED_SYMBOLS.length
+      ? { ...config, selectedSymbols: portfolioSymbols }
+      : config;
+    const meta = saveAppliedStrategy(configToSave, "backtest", capital);
     setAppliedMeta(meta);
     setApplySuccess("策略已应用，Dashboard 与策略信号页将使用当前参数");
     setTimeout(() => setApplySuccess(null), 4000);
-  }, [config, capital]);
+  }, [config, capital, mode, portfolioSymbols]);
 
   const stopStrategy = useCallback(async () => {
     if (
@@ -521,12 +524,16 @@ export default function BacktestPage() {
     setAlertLoading(true);
     setAlertMessage(null);
     persistAlertConfig();
+    // Use config with selectedSymbols if in portfolio mode
+    const configToUse: StrategyConfig = mode === "portfolio" && portfolioSymbols.length < TRACKED_SYMBOLS.length
+      ? { ...config, selectedSymbols: portfolioSymbols }
+      : config;
     try {
       const res = await fetch("/api/alerts/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          strategyConfig: config,
+          strategyConfig: configToUse,
           checkInterval: parseInt(alertCheckInterval),
           emailConfig: {
             host: emailHost,
@@ -546,14 +553,14 @@ export default function BacktestPage() {
         return;
       }
       setAlertMessage({ type: "success", text: "信号提醒已启动，将使用当前策略参数" });
-      saveAppliedStrategy(config, "backtest", capital);
+      saveAppliedStrategy(configToUse, "backtest", capital);
       setAppliedMeta(loadAppliedStrategy());
     } catch {
       setAlertMessage({ type: "error", text: "启动信号提醒失败" });
     } finally {
       setAlertLoading(false);
     }
-  }, [config, alertCheckInterval, emailHost, emailPort, emailSecure, emailUser, emailPass, recipientEmail, notifyBuy, notifySell, persistAlertConfig]);
+  }, [config, alertCheckInterval, emailHost, emailPort, emailSecure, emailUser, emailPass, recipientEmail, notifyBuy, notifySell, persistAlertConfig, mode, portfolioSymbols]);
 
   const stopAlerts = useCallback(async () => {
     setAlertLoading(true);
